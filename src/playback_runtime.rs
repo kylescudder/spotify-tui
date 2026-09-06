@@ -407,4 +407,145 @@ mod tests {
 
         drop(change_tx);
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_rediscovers_mpris_after_a_process_unique_name_changes() {
+        use std::{
+            collections::HashMap,
+            io::{BufRead, BufReader},
+            process::{Child, Command, Stdio},
+        };
+
+        use zbus::zvariant::OwnedValue;
+
+        struct TestBus {
+            address: String,
+            child: Child,
+        }
+
+        impl TestBus {
+            fn start() -> Self {
+                let mut child = Command::new("dbus-daemon")
+                    .args(["--session", "--print-address=1", "--nofork"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .expect("private D-Bus daemon should start");
+                let stdout = child.stdout.take().expect("daemon should have stdout");
+                let mut address = String::new();
+                BufReader::new(stdout)
+                    .read_line(&mut address)
+                    .expect("daemon should print its address");
+
+                Self {
+                    address: address.trim().to_owned(),
+                    child,
+                }
+            }
+        }
+
+        impl Drop for TestBus {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+
+        struct MockMprisPlayer;
+
+        #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+        impl MockMprisPlayer {
+            #[zbus(property)]
+            fn playback_status(&self) -> &str {
+                "Paused"
+            }
+
+            #[zbus(property)]
+            fn metadata(&self) -> HashMap<String, OwnedValue> {
+                HashMap::new()
+            }
+
+            #[zbus(property)]
+            fn position(&self) -> i64 {
+                0
+            }
+
+            #[zbus(property)]
+            fn volume(&self) -> f64 {
+                0.5
+            }
+        }
+
+        enum ServiceCommand {
+            Stop(mpsc::Sender<()>),
+            Start { pid: u32, ready: mpsc::Sender<()> },
+        }
+
+        async fn start_service(address: &str, pid: u32) -> zbus::Result<zbus::Connection> {
+            zbus::connection::Builder::address(address)?
+                .name(format!("org.mpris.MediaPlayer2.spotifyd.instance{pid}"))?
+                .serve_at("/org/mpris/MediaPlayer2", MockMprisPlayer)?
+                .build()
+                .await
+        }
+
+        let bus = TestBus::start();
+        let address = bus.address.clone();
+        let (service_tx, mut service_rx) = tokio::sync::mpsc::unbounded_channel();
+        let runtime = PlaybackRuntime::start_with_factory(move || async move {
+            let mut service = Some(
+                start_service(&address, 100)
+                    .await
+                    .expect("initial mock player should start"),
+            );
+            let source = MprisPlaybackSource::connect_to_address(address.clone()).await?;
+            tokio::spawn(async move {
+                while let Some(command) = service_rx.recv().await {
+                    match command {
+                        ServiceCommand::Stop(ready) => {
+                            drop(service.take());
+                            let _ = ready.send(());
+                        }
+                        ServiceCommand::Start { pid, ready } => {
+                            assert!(service.is_none(), "mock player should be stopped");
+                            service = Some(
+                                start_service(&address, pid)
+                                    .await
+                                    .expect("replacement mock player should start"),
+                            );
+                            let _ = ready.send(());
+                        }
+                    }
+                }
+                drop(service);
+            });
+            Ok(source)
+        })
+        .expect("runtime should start");
+
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+        assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
+
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        service_tx
+            .send(ServiceCommand::Stop(stopped_tx))
+            .expect("service manager should be running");
+        stopped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("mock player should stop");
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Disconnected);
+
+        let (started_tx, started_rx) = mpsc::channel();
+        service_tx
+            .send(ServiceCommand::Start {
+                pid: 200,
+                ready: started_tx,
+            })
+            .expect("service manager should be running");
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement mock player should start");
+        assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
+    }
 }

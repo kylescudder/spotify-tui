@@ -26,6 +26,7 @@
 
           cargoLock.lockFile = ./Cargo.lock;
           nativeBuildInputs = [ pkgs.makeWrapper ];
+          nativeCheckInputs = [ pkgs.dbus ];
 
           postInstall = ''
             install -Dm644 themes/*.toml -t $out/share/spotify-tui/themes

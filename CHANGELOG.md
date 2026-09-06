@@ -11,6 +11,8 @@ uses semantic versioning once public releases begin.
   the legacy fixed name.
 - Live Linux MPRIS property and seek subscriptions, bounded automatic
   reconnection, and play/pause, track, seek, and volume controls in the TUI.
+- Fixed a restart race that could miss Spotifyd's MPRIS name disappearing and
+  leave the playback supervisor waiting on the terminated player indefinitely.
 - A live now-playing view with track metadata, interpolated progress, playback
   state, volume, and discoverable arrow-key and Vim-style bindings.
 - TOML configuration with built-in and custom colour themes.

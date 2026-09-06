@@ -126,6 +126,17 @@ impl MprisPlaybackSource {
         Ok(Self { connection })
     }
 
+    #[cfg(test)]
+    pub(crate) async fn connect_to_address(address: String) -> Result<Self, PlaybackError> {
+        let connection = zbus::connection::Builder::address(address.as_str())
+            .map_err(|error| PlaybackError::SessionBus(error.to_string()))?
+            .build()
+            .await
+            .map_err(|error| PlaybackError::SessionBus(error.to_string()))?;
+
+        Ok(Self { connection })
+    }
+
     async fn spotifyd_bus_name(&self) -> Result<Option<OwnedBusName>, PlaybackError> {
         let dbus = zbus::fdo::DBusProxy::new(&self.connection)
             .await
@@ -140,6 +151,18 @@ impl MprisPlaybackSource {
             .into_iter()
             .filter(|name| is_spotifyd_bus_name(name.as_str()))
             .min_by(|left, right| left.as_str().cmp(right.as_str())))
+    }
+
+    async fn bus_name_is_owned(&self, expected: &str) -> Result<bool, PlaybackError> {
+        let dbus = zbus::fdo::DBusProxy::new(&self.connection)
+            .await
+            .map_err(|error| PlaybackError::SessionBus(error.to_string()))?;
+        let names = dbus
+            .list_names()
+            .await
+            .map_err(|error| PlaybackError::SessionBus(error.to_string()))?;
+
+        Ok(names.iter().any(|name| name.as_str() == expected))
     }
 
     async fn player(&self) -> Result<MprisPlayerProxy<'_>, PlaybackError> {
@@ -189,7 +212,7 @@ impl PlaybackSource for MprisPlaybackSource {
         let player = self.player().await?;
         let service = player.inner().destination().to_owned();
         let properties = zbus::fdo::PropertiesProxy::builder(&self.connection)
-            .destination(service)
+            .destination(service.clone())
             .map_err(mpris_error)?
             .path("/org/mpris/MediaPlayer2")
             .map_err(mpris_error)?
@@ -206,6 +229,12 @@ impl PlaybackSource for MprisPlaybackSource {
             .receive_owner_changed()
             .await
             .map_err(mpris_error)?;
+
+        // The player can exit between discovery and installing these streams. Rechecking after
+        // every subscription is live closes that gap; a later exit is then delivered normally.
+        if !self.bus_name_is_owned(service.as_str()).await? {
+            return Err(PlaybackError::Disconnected);
+        }
 
         tokio::select! {
             change = property_changes.next() => {
