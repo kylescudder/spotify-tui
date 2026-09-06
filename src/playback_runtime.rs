@@ -413,8 +413,11 @@ mod tests {
     fn runtime_rediscovers_mpris_after_a_process_unique_name_changes() {
         use std::{
             collections::HashMap,
-            io::{BufRead, BufReader},
+            fs,
+            io::Read,
+            path::PathBuf,
             process::{Child, Command, Stdio},
+            sync::atomic::{AtomicU64, Ordering},
         };
 
         use zbus::zvariant::OwnedValue;
@@ -422,25 +425,69 @@ mod tests {
         struct TestBus {
             address: String,
             child: Child,
+            socket_directory: PathBuf,
         }
 
         impl TestBus {
             fn start() -> Self {
+                static NEXT_BUS_ID: AtomicU64 = AtomicU64::new(0);
+
+                let socket_directory = std::env::temp_dir().join(format!(
+                    "spotify-tui-dbus-{}-{}",
+                    std::process::id(),
+                    NEXT_BUS_ID.fetch_add(1, Ordering::Relaxed)
+                ));
+                fs::create_dir(&socket_directory)
+                    .expect("private D-Bus socket directory should be created");
+                let socket_path = socket_directory.join("bus");
+                let address = format!("unix:path={}", socket_path.display());
                 let mut child = Command::new("dbus-daemon")
-                    .args(["--session", "--print-address=1", "--nofork"])
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
+                    .args(["--session", "--nofork"])
+                    .arg(format!("--address={address}"))
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
                     .spawn()
                     .expect("private D-Bus daemon should start");
-                let stdout = child.stdout.take().expect("daemon should have stdout");
-                let mut address = String::new();
-                BufReader::new(stdout)
-                    .read_line(&mut address)
-                    .expect("daemon should print its address");
+
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !socket_path.exists() {
+                    if let Some(status) = child
+                        .try_wait()
+                        .expect("private D-Bus daemon status should be readable")
+                    {
+                        let mut stderr = String::new();
+                        child
+                            .stderr
+                            .take()
+                            .expect("daemon should have stderr")
+                            .read_to_string(&mut stderr)
+                            .expect("daemon stderr should be readable");
+                        let _ = fs::remove_dir_all(&socket_directory);
+                        panic!(
+                            "private D-Bus daemon exited with {status} before creating its socket: {}",
+                            stderr.trim()
+                        );
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let mut stderr = String::new();
+                        if let Some(mut output) = child.stderr.take() {
+                            let _ = output.read_to_string(&mut stderr);
+                        }
+                        let _ = fs::remove_dir_all(&socket_directory);
+                        panic!(
+                            "timed out waiting for the private D-Bus socket: {}",
+                            stderr.trim()
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
 
                 Self {
-                    address: address.trim().to_owned(),
+                    address,
                     child,
+                    socket_directory,
                 }
             }
         }
@@ -449,6 +496,7 @@ mod tests {
             fn drop(&mut self) {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
+                let _ = fs::remove_dir_all(&self.socket_directory);
             }
         }
 
