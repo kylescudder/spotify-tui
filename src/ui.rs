@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Text},
     widgets::{Block, Borders, Gauge, Paragraph, Wrap},
@@ -114,14 +114,15 @@ fn render_playback(
     if compact {
         render_metadata(frame, layout[0], playback, theme, true);
     } else {
+        let stage = now_playing_stage(layout[0]);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(38),
+                Constraint::Length(stage.artwork_width),
                 Constraint::Length(2),
                 Constraint::Fill(1),
             ])
-            .split(layout[0]);
+            .split(stage.area);
         render_artwork(frame, columns[0], state.artwork(), theme, artwork_renderer);
         let metadata_area = Layout::default()
             .direction(Direction::Vertical)
@@ -207,6 +208,44 @@ fn render_playback(
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NowPlayingStage {
+    area: Rect,
+    artwork_width: u16,
+}
+
+fn now_playing_stage(area: Rect) -> NowPlayingStage {
+    const MAX_STAGE_WIDTH: u16 = 112;
+    const MAX_ARTWORK_INNER_HEIGHT: u16 = 24;
+    const MIN_METADATA_WIDTH: u16 = 24;
+    const COLUMN_GAP: u16 = 2;
+    const PANEL_BORDERS: u16 = 2;
+
+    let stage_width = area.width.min(MAX_STAGE_WIDTH);
+    let available_artwork_width = stage_width
+        .saturating_sub(COLUMN_GAP)
+        .saturating_sub(MIN_METADATA_WIDTH);
+    let artwork_inner_height = area
+        .height
+        .saturating_sub(PANEL_BORDERS)
+        .min(MAX_ARTWORK_INNER_HEIGHT)
+        .min(available_artwork_width.saturating_sub(PANEL_BORDERS) / 2);
+    let artwork_width = artwork_inner_height
+        .saturating_mul(2)
+        .saturating_add(PANEL_BORDERS);
+    let stage_height = artwork_inner_height.saturating_add(PANEL_BORDERS);
+
+    NowPlayingStage {
+        area: Rect::new(
+            area.x + area.width.saturating_sub(stage_width) / 2,
+            area.y + area.height.saturating_sub(stage_height) / 2,
+            stage_width,
+            stage_height,
+        ),
+        artwork_width,
+    }
+}
+
 fn render_metadata(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
@@ -254,29 +293,30 @@ fn render_artwork(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let label = match artwork {
-        ArtworkState::Loading => "Loading artwork…",
-        ArtworkState::Ready(_) => "Rendering artwork…",
-        ArtworkState::Unavailable => "No artwork",
-        ArtworkState::Failed(_) => "Artwork unavailable",
-    };
-    let label_area = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-        ])
-        .split(inner)[1];
-    frame.render_widget(
-        Paragraph::new(label)
-            .style(Style::default().fg(theme.muted()))
-            .alignment(Alignment::Center),
-        label_area,
-    );
-
-    if matches!(artwork, ArtworkState::Ready(_)) {
-        renderer.render(frame, inner);
+    match artwork {
+        ArtworkState::Ready(_) => renderer.render(frame, inner),
+        ArtworkState::Loading | ArtworkState::Unavailable | ArtworkState::Failed(_) => {
+            let label = match artwork {
+                ArtworkState::Loading => "Loading artwork…",
+                ArtworkState::Unavailable => "No artwork",
+                ArtworkState::Failed(_) => "Artwork unavailable",
+                ArtworkState::Ready(_) => unreachable!("handled above"),
+            };
+            let label_area = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(1),
+                    Constraint::Fill(1),
+                ])
+                .split(inner)[1];
+            frame.render_widget(
+                Paragraph::new(label)
+                    .style(Style::default().fg(theme.muted()))
+                    .alignment(Alignment::Center),
+                label_area,
+            );
+        }
     }
 }
 
@@ -343,11 +383,13 @@ fn status_text(state: &AppState) -> String {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use image::DynamicImage;
     use ratatui::{Terminal, backend::TestBackend, style::Color};
 
     use super::*;
     use crate::{
-        app::AppEvent,
+        app::{AppEvent, ArtworkState},
+        artwork::Artwork,
         config::Config,
         playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata},
     };
@@ -512,5 +554,96 @@ background = "#010203"
         let text = rendered_text(&terminal);
         assert!(text.contains("Live track"));
         assert!(!text.contains("Artwork"));
+    }
+
+    #[test]
+    fn tall_layout_keeps_artwork_in_a_bounded_centered_stage() {
+        let mut state = AppState::default();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: PlaybackSnapshot {
+                status: PlaybackStatus::Playing,
+                track: TrackMetadata {
+                    track_id: Some("spotify:track:one".to_owned()),
+                    title: Some("Live track".to_owned()),
+                    artists: vec!["Artist".to_owned()],
+                    album: Some("Album".to_owned()),
+                    duration: Some(Duration::from_secs(180)),
+                    art_url: Some("https://example.com/art.jpg".to_owned()),
+                },
+                position: Duration::ZERO,
+                volume: 0.75,
+            },
+            observed_at: Instant::now(),
+        });
+        let mut terminal =
+            Terminal::new(TestBackend::new(160, 70)).expect("test backend is infallible");
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        let text = rendered_text(&terminal);
+        let lines = text.lines().collect::<Vec<_>>();
+        let artwork_title_row = lines
+            .iter()
+            .position(|line| line.contains("Artwork"))
+            .expect("artwork title should be visible");
+        let loading_row = lines
+            .iter()
+            .position(|line| line.contains("Loading artwork…"))
+            .expect("loading state should be visible");
+
+        assert!(
+            artwork_title_row >= 10,
+            "artwork starts at row {artwork_title_row}"
+        );
+        assert!(
+            loading_row - artwork_title_row <= 14,
+            "artwork panel spans at least {} rows",
+            loading_row - artwork_title_row
+        );
+    }
+
+    #[test]
+    fn ready_artwork_does_not_leave_a_rendering_placeholder() {
+        let mut state = AppState::default();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: PlaybackSnapshot {
+                status: PlaybackStatus::Playing,
+                track: TrackMetadata {
+                    track_id: Some("spotify:track:one".to_owned()),
+                    title: Some("Live track".to_owned()),
+                    artists: vec!["Artist".to_owned()],
+                    album: Some("Album".to_owned()),
+                    duration: Some(Duration::from_secs(180)),
+                    art_url: Some("https://example.com/art.jpg".to_owned()),
+                },
+                position: Duration::ZERO,
+                volume: 0.75,
+            },
+            observed_at: Instant::now(),
+        });
+        state.reduce(AppEvent::ArtworkLoaded {
+            track_revision: state.track_revision(),
+            artwork: Artwork::new(
+                "https://example.com/art.jpg".to_owned(),
+                DynamicImage::new_rgb8(8, 8),
+            ),
+        });
+        assert!(matches!(state.artwork(), ArtworkState::Ready(_)));
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 30)).expect("test backend is infallible");
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        assert!(!rendered_text(&terminal).contains("Rendering artwork…"));
     }
 }
