@@ -23,7 +23,8 @@ uses semantic versioning once public releases begin.
 - Asynchronous album artwork from Spotifyd metadata with HTTPS, download and
   decode limits, a bounded in-memory cache, stale-track protection, Ghostty
   Kitty graphics, Unicode half-block fallback, bounded responsive placement,
-  and placeholders that clear once artwork is ready.
+  vertically centred compact playback details, and placeholders that clear once
+  artwork is ready.
 - TOML configuration with built-in and custom colour themes.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,
   direct POSIX and PowerShell installers, checksums, and build provenance.

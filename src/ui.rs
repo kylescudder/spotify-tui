@@ -89,31 +89,33 @@ fn render_playback(
     artwork_renderer: &mut ArtworkRenderer,
 ) {
     let compact = area.height < 16 || area.width < 60;
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if compact {
-            [
+    let (status_area, progress_area, help_area) = if compact {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Fill(1),
                 Constraint::Length(3),
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Fill(1),
                 Constraint::Length(1),
-            ]
-        } else {
-            [
+            ])
+            .margin(1)
+            .split(area);
+        render_metadata(frame, layout[1], playback, theme, true);
+        (layout[2], layout[3], layout[5])
+    } else {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
                 Constraint::Fill(1),
                 Constraint::Length(1),
                 Constraint::Length(3),
                 Constraint::Length(0),
                 Constraint::Length(1),
-            ]
-        })
-        .margin(1)
-        .split(area);
-
-    if compact {
-        render_metadata(frame, layout[0], playback, theme, true);
-    } else {
+            ])
+            .margin(1)
+            .split(area);
         let stage = now_playing_stage(layout[0]);
         let columns = Layout::default()
             .direction(Direction::Horizontal)
@@ -133,7 +135,8 @@ fn render_playback(
             ])
             .split(columns[2])[1];
         render_metadata(frame, metadata_area, playback, theme, false);
-    }
+        (layout[1], layout[2], layout[4])
+    };
 
     let volume = if playback.volume().is_finite() {
         playback.volume().clamp(0.0, 1.0)
@@ -149,7 +152,7 @@ fn render_playback(
         Paragraph::new(status)
             .style(Style::default().fg(status_color_for_playback(playback, theme)))
             .alignment(Alignment::Center),
-        layout[1],
+        status_area,
     );
 
     let position = playback.position_at(std::time::Instant::now());
@@ -190,7 +193,7 @@ fn render_playback(
                     .border_style(Style::default().fg(theme.border())),
             )
         },
-        layout[2],
+        progress_area,
     );
 
     let help = if area.width >= 76 {
@@ -204,7 +207,7 @@ fn render_playback(
         Paragraph::new(help)
             .style(Style::default().fg(theme.muted()))
             .alignment(Alignment::Center),
-        layout[4],
+        help_area,
     );
 }
 
@@ -554,6 +557,55 @@ background = "#010203"
         let text = rendered_text(&terminal);
         assert!(text.contains("Live track"));
         assert!(!text.contains("Artwork"));
+    }
+
+    #[test]
+    fn tall_compact_layout_centers_the_playback_details() {
+        let mut state = AppState::default();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: PlaybackSnapshot {
+                status: PlaybackStatus::Paused,
+                track: TrackMetadata {
+                    track_id: Some("spotify:track:one".to_owned()),
+                    title: Some("Live track".to_owned()),
+                    artists: vec!["Artist".to_owned()],
+                    album: Some("Album".to_owned()),
+                    duration: Some(Duration::from_secs(180)),
+                    art_url: Some("https://example.com/art.jpg".to_owned()),
+                },
+                position: Duration::from_secs(12),
+                volume: 0.75,
+            },
+            observed_at: Instant::now(),
+        });
+        const TERMINAL_HEIGHT: u16 = 34;
+        let mut terminal = Terminal::new(TestBackend::new(58, TERMINAL_HEIGHT))
+            .expect("test backend is infallible");
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        let text = rendered_text(&terminal);
+        let lines = text.lines().collect::<Vec<_>>();
+        let title_row = lines
+            .iter()
+            .position(|line| line.contains("Live track"))
+            .expect("track title should be visible");
+        let progress_row = lines
+            .iter()
+            .position(|line| line.contains("0:12 / 3:00"))
+            .expect("progress should be visible");
+        let group_center = (title_row + progress_row) / 2;
+        let viewport_center = usize::from(TERMINAL_HEIGHT / 2);
+
+        assert!(
+            group_center.abs_diff(viewport_center) <= 2,
+            "compact playback group is centered at row {group_center}, expected row {viewport_center}"
+        );
     }
 
     #[test]
