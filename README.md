@@ -1,0 +1,326 @@
+# Spotify TUI
+
+A local-first Spotify controller and visualizer for `spotifyd`. The current
+Linux runtime uses the session MPRIS interface for playback and controls, so it
+does not require Spotify Web API access. Version 1 targets a Nix flake on Linux
+and Homebrew on macOS, plus direct POSIX and Windows installers. The macOS and
+Windows playback adapters are still to be implemented.
+
+The project is under active development. Linux playback uses Spotifyd's MPRIS
+interface. macOS and Windows builds compile and have release packaging, but
+their native playback adapters are not implemented yet; those packages must not
+be described as functionally complete until the platform acceptance tests pass.
+
+## Installation
+
+The intended canonical repository is `kylescudder/spotify-tui`, matching the
+owner used by the existing dotfiles repositories. It has not been created or
+released yet, so these commands become live after the external repository setup
+and first release. The release workflow stamps the actual repository into both
+direct installers, which also keeps forks functional.
+
+### Nix
+
+Run directly from the flake:
+
+```bash
+nix run github:kylescudder/spotify-tui
+```
+
+Or install it into the current profile:
+
+```bash
+nix profile install github:kylescudder/spotify-tui
+```
+
+The flake exposes `packages.default`, `apps.default`, `checks`, a development
+shell, and a Home Manager module on `x86_64-linux` and `aarch64-linux`. A Home
+Manager configuration can consume it with:
+
+```nix
+# flake.nix
+{
+  inputs.spotify-tui.url = "github:kylescudder/spotify-tui";
+}
+```
+
+Then import it from a Home Manager module where your flake inputs are available:
+
+```nix
+{ inputs, ... }:
+{
+  imports = [ inputs.spotify-tui.homeManagerModules.default ];
+  programs.spotify-tui.enable = true;
+}
+```
+
+The module installs Spotify TUI and enables Spotifyd with session MPRIS. Set
+`programs.spotify-tui.enableSpotifyd = false` to preserve a separately managed
+Spotifyd service.
+
+### Homebrew on macOS
+
+Spotify TUI is published through the existing
+[`kylescudder/tap`](https://github.com/kylescudder/homebrew-tap) tap:
+
+```bash
+brew install kylescudder/tap/spotify-tui
+```
+
+The formula depends on `spotifyd` and `cava`. The release workflow styles,
+audits, builds, installs, and tests the formula on macOS before opening its tap
+update pull request.
+
+### Direct installer on Linux or macOS
+
+```bash
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
+  https://github.com/kylescudder/spotify-tui/releases/latest/download/install.sh | sh
+```
+
+The installer detects the platform, downloads the matching release archive,
+checks it against `SHA256SUMS`, and installs both binaries to `$HOME/.local/bin`
+without `sudo`. To inspect the script or pin a version:
+
+```bash
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
+  https://github.com/kylescudder/spotify-tui/releases/latest/download/install.sh \
+  -o install-spotify-tui.sh
+less install-spotify-tui.sh
+sh install-spotify-tui.sh --version 0.1.0 --install-dir "$HOME/.local/bin"
+```
+
+The direct installer does not modify the system package manager. It warns when
+`spotifyd` is absent; install Spotifyd separately before authenticating.
+
+### Direct installer on Windows
+
+From PowerShell:
+
+```powershell
+irm https://github.com/kylescudder/spotify-tui/releases/latest/download/install.ps1 | iex
+```
+
+The default destination is
+`%LOCALAPPDATA%\Programs\spotify-tui\bin`, which is added to the user PATH.
+The inspect-first, version-pinned form is:
+
+```powershell
+Invoke-WebRequest `
+  https://github.com/kylescudder/spotify-tui/releases/latest/download/install.ps1 `
+  -OutFile install-spotify-tui.ps1
+Get-Content .\install-spotify-tui.ps1
+.\install-spotify-tui.ps1 -Version 0.1.0 -NoModifyPath
+```
+
+### Release verification
+
+Every release includes `SHA256SUMS` and GitHub build-provenance attestations.
+After downloading an artifact, verify its checksum and provenance with:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify spotify-tui-x86_64-unknown-linux-musl.tar.gz \
+  --repo kylescudder/spotify-tui
+```
+
+### Uninstall
+
+Use `nix profile remove`, `brew uninstall spotify-tui`, or remove the two files
+installed by the direct installer:
+
+```bash
+rm "$HOME/.local/bin/spotify-tui" "$HOME/.local/bin/spotify-tui-diagnose"
+```
+
+On Windows, remove `spotify-tui.exe` and `spotify-tui-diagnose.exe` from
+`%LOCALAPPDATA%\Programs\spotify-tui\bin`, then remove that directory from the
+user PATH if the installer added it.
+
+## Development
+
+Run from a Rust checkout with:
+
+```bash
+cargo run
+```
+
+Press `q`, `Esc`, or `Ctrl-C` to quit.
+
+Inspect the current normalized MPRIS state without starting the TUI with:
+
+```bash
+cargo run --bin spotify-tui-diagnose
+```
+
+The diagnostic reports `connection: disconnected` when `spotifyd` does not own
+its expected session-bus name.
+
+## Authentication
+
+Spotify TUI does not collect a Spotify password or implement its own OAuth
+client. Authentication is delegated to the installed `spotifyd` binary, which
+stores and owns the resulting credential.
+
+Authenticate once before the first normal launch:
+
+```bash
+spotify-tui auth
+```
+
+Spotifyd prints a browser URL. Open it, sign into Spotify, approve the
+connection, and return to the terminal. After successful authentication,
+Spotify TUI attempts to restart the `spotifyd.service` systemd user unit so the
+new credential is picked up immediately. Authentication remains successful if
+that restart is unavailable; a warning explains how to recover.
+
+The disconnected, connecting, and error screens offer the same flow without
+leaving the application permanently:
+
+```text
+a  leave the TUI temporarily and authenticate with spotifyd
+r  retry the local connection
+q  quit
+```
+
+Arguments after `auth` are forwarded to `spotifyd authenticate`. A leading `--`
+is optional and useful for clarity:
+
+```bash
+spotify-tui auth -- --oauth-port 9876
+spotify-tui auth -- --config-path /path/to/spotifyd.conf
+```
+
+Packaging wrappers can use these environment variables when Spotifyd is not in
+the normal path or its generated configuration lives elsewhere:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SPOTIFY_TUI_SPOTIFYD` | `spotifyd` | Spotifyd executable or absolute path. |
+| `SPOTIFY_TUI_SPOTIFYD_CONFIG` | Unset | Config path passed to Spotifyd before the `authenticate` subcommand. |
+| `SPOTIFY_TUI_SPOTIFYD_SERVICE` | `spotifyd.service` | systemd user unit restarted after successful authentication. |
+| `SPOTIFY_TUI_SYSTEMCTL` | `systemctl` | `systemctl` executable or absolute path. |
+
+Spotifyd also supports Spotify Connect discovery as an alternative: start the
+daemon and select its device from an official Spotify client on the same local
+network. The packaged OAuth flow is more predictable because it does not depend
+on LAN discovery or firewall configuration.
+
+Spotifyd requires a Spotify Premium account. The current MPRIS and systemd
+integration is Linux-only. Homebrew on macOS and a PowerShell installer on
+Windows are version-1 distribution targets, but their playback and service
+adapters must be completed before those packages are called functionally
+complete.
+
+## Configuration
+
+Configuration uses TOML and is optional. If no file is found, Spotify TUI starts
+with the built-in `spotify` colour scheme.
+
+### Config file location
+
+The first applicable location wins:
+
+1. The path in `SPOTIFY_TUI_CONFIG`, when the environment variable is set.
+2. `$XDG_CONFIG_HOME/spotify-tui/config.toml`, when `XDG_CONFIG_HOME` is set.
+3. `$HOME/.config/spotify-tui/config.toml`.
+4. Built-in defaults when none of those paths can be resolved or the default
+   config file does not exist.
+
+An explicitly selected `SPOTIFY_TUI_CONFIG` file must exist. Unreadable files,
+unknown options, and invalid values produce an actionable error before the
+application enters raw terminal mode.
+
+To try a file without installing it permanently:
+
+```bash
+SPOTIFY_TUI_CONFIG=/path/to/config.toml cargo run
+```
+
+### Top-level options
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `version` | Yes | — | Configuration schema version. The current and only supported value is `1`. |
+| `theme` | No | `"spotify"` | Active built-in theme or a custom name declared under `[themes]`. |
+
+The built-in theme names are `spotify`, `midnight`, and `high-contrast`:
+
+```toml
+version = 1
+theme = "midnight"
+```
+
+### Custom theme options
+
+Declare a custom theme with `[themes.<name>]`, then select that name with the
+top-level `theme` option. Every custom theme option is optional: omitted colours
+come from its `base`.
+
+| Option | Default | UI role |
+| --- | --- | --- |
+| `base` | `"spotify"` | Built-in theme to inherit from. Must be `spotify`, `midnight`, or `high-contrast`; custom themes cannot inherit from other custom themes. |
+| `background` | From `base` | Terminal canvas and panel background. |
+| `foreground` | From `base` | Primary text and values. |
+| `muted` | From `base` | Help text, secondary metadata, and disconnected states. |
+| `border` | From `base` | Panel borders and dividers. |
+| `accent` | From `base` | Title, active controls, and connected/playing states. |
+| `warning` | From `base` | Connecting, loading, and other attention states. |
+| `error` | From `base` | Playback and runtime error states. |
+
+Custom names may contain any TOML-compatible key characters but cannot replace
+a built-in theme name. This example shows every available custom theme option:
+
+```toml
+version = 1
+theme = "ocean"
+
+[themes.ocean]
+base = "midnight"
+background = "#07111f"
+foreground = "#dbeafe"
+muted = "dark-gray"
+border = "#274060"
+accent = "#38bdf8"
+warning = "light-yellow"
+error = "light-red"
+```
+
+### Colour values
+
+Every colour option accepts either a six-digit RGB value such as `"#1ed760"` or
+one of these case-insensitive terminal colour names:
+
+```text
+default, reset,
+black, red, green, yellow, blue, magenta, cyan, white,
+gray, grey, dark-gray, dark-grey,
+light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan
+```
+
+Underscores can be used instead of hyphens, so `"light_cyan"` and
+`"light-cyan"` are equivalent.
+
+### Catppuccin Mocha example
+
+A complete ready-to-use configuration is included at
+[themes/catppuccin-mocha.toml](themes/catppuccin-mocha.toml). Run it directly
+from the repository with:
+
+```bash
+SPOTIFY_TUI_CONFIG=themes/catppuccin-mocha.toml cargo run
+```
+
+## Development
+
+Run all repository checks with:
+
+```bash
+make check
+```
+
+The individual commands are `make format`, `make format-check`, `make lint`,
+and `make test`.
+
+See [HANDOVER.md](HANDOVER.md) for the product boundary, architecture, execution
+sequence, and acceptance checks.

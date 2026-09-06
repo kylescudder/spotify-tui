@@ -1,0 +1,7 @@
+version = 1
+public_release = false
+
+[platforms]
+linux = false
+macos = false
+windows = false

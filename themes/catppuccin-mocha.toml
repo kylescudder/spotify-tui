@@ -1,0 +1,13 @@
+# Catppuccin Mocha palette: https://github.com/catppuccin/palette
+version = 1
+theme = "catppuccin-mocha"
+
+[themes.catppuccin-mocha]
+base = "spotify"
+background = "#1e1e2e" # base
+foreground = "#cdd6f4" # text
+muted = "#7f849c"      # overlay1
+border = "#45475a"     # surface1
+accent = "#cba6f7"     # mauve
+warning = "#f9e2af"    # yellow
+error = "#f38ba8"      # red
