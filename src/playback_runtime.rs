@@ -441,9 +441,28 @@ mod tests {
                     .expect("private D-Bus socket directory should be created");
                 let socket_path = socket_directory.join("bus");
                 let address = format!("unix:path={}", socket_path.display());
+                let config_path = socket_directory.join("session.conf");
+                let config = format!(
+                    r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <keep_umask/>
+  <listen>{address}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+"#
+                );
+                fs::write(&config_path, config)
+                    .expect("private D-Bus configuration should be written");
                 let mut child = Command::new("dbus-daemon")
-                    .args(["--session", "--nofork"])
-                    .arg(format!("--address={address}"))
+                    .arg("--nofork")
+                    .arg(format!("--config-file={}", config_path.display()))
                     .stdout(Stdio::null())
                     .stderr(Stdio::piped())
                     .spawn()

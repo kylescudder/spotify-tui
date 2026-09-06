@@ -13,8 +13,8 @@ uses semantic versioning once public releases begin.
   reconnection, and play/pause, track, seek, and volume controls in the TUI.
 - Fixed a restart race that could miss Spotifyd's MPRIS name disappearing and
   leave the playback supervisor waiting on the terminated player indefinitely.
-- Made the private D-Bus restart regression test use an explicit temporary
-  socket so it runs deterministically in Nix build sandboxes.
+- Made the private D-Bus restart regression test use its own temporary socket
+  and session configuration so it runs deterministically in Nix build sandboxes.
 - A live now-playing view with track metadata, interpolated progress, playback
   state, volume, and discoverable arrow-key and Vim-style bindings.
 - TOML configuration with built-in and custom colour themes.
