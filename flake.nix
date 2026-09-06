@@ -1,5 +1,5 @@
 {
-  description = "A local-first Spotify controller and visualizer for spotifyd";
+  description = "A local-first terminal Spotify controller powered by spotifyd";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -31,11 +31,11 @@
           postInstall = ''
             install -Dm644 themes/*.toml -t $out/share/spotify-tui/themes
             wrapProgram $out/bin/spotify-tui \
-              --prefix PATH : ${nixpkgs.lib.makeBinPath [ pkgs.spotifyd pkgs.cava ]}
+              --prefix PATH : ${nixpkgs.lib.makeBinPath [ pkgs.spotifyd ]}
           '';
 
           meta = {
-            description = "Local-first Spotify controller and visualizer for spotifyd";
+            description = "Local-first terminal Spotify controller powered by spotifyd";
             homepage = "https://github.com/kylescudder/spotify-tui";
             license = nixpkgs.lib.licenses.mit;
             mainProgram = "spotify-tui";

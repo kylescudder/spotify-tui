@@ -26,6 +26,8 @@ uses semantic versioning once public releases begin.
   bounded responsive placement, vertically centred compact playback details,
   and placeholders that clear once artwork is ready.
 - TOML configuration with built-in and custom colour themes.
+- Removed the planned audio spectrum from the product scope and dropped the
+  unused `cava` dependency from Nix and Homebrew packaging.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,
   direct POSIX and PowerShell installers, checksums, and build provenance.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified

@@ -3,8 +3,8 @@
 ## Objective
 
 Build a polished Spotify now-playing TUI that remains useful when Spotify's Web
-API is rate-limited or changes. The first release is a local controller and
-visualizer for `spotifyd`; it does not browse Spotify through the Web API.
+API is rate-limited or changes. The first release is a local controller for
+`spotifyd`; it does not browse Spotify through the Web API.
 
 The target machine is Kyle's NixOS workstation (`stevie`) using Hyprland,
 Ghostty, PipeWire, Home Manager, and the dotfiles repository at
@@ -31,7 +31,6 @@ Version 1 must provide:
 - Play/pause, previous, next, seek, and volume controls.
 - Album artwork rendered with the best supported terminal graphics protocol,
   preferring Kitty graphics in Ghostty and degrading to a text/block fallback.
-- A responsive audio spectrum sourced from the local audio output.
 - Keyboard-first navigation, including Vim-style bindings.
 - User customization through a TOML config file, including configurable colour
   schemes, with polished defaults when no config is present.
@@ -49,10 +48,9 @@ optional modules and must not be required for the controller to start or work.
 
 ## Platform and reliability seams
 
-Keep `PlaybackSource`, `ArtworkSource`, `SpectrumSource`, and service lifecycle
-control platform-neutral. Platform adapters must produce the same normalized
-events and commands so `AppState` and the view contain no operating-system
-branches.
+Keep `PlaybackSource`, `ArtworkSource`, and service lifecycle control
+platform-neutral. Platform adapters must produce the same normalized events and
+commands so `AppState` and the view contain no operating-system branches.
 
 On Linux, use the session MPRIS interface exposed by `spotifyd` as the source of
 truth for playback state and controls. The existing config already sets:
@@ -95,12 +93,6 @@ terminals use Unicode half blocks, and missing or invalid art renders a text
 placeholder. The macOS and Windows playback adapters must supply equivalent
 artwork metadata or a documented local alternative.
 
-The audio spectrum cannot come from MPRIS. On Linux, use `cava` configured with
-PipeWire/PulseAudio capture and a machine-readable raw output consumed by the
-TUI. Prove equivalent macOS/CoreAudio and Windows/WASAPI capture paths before
-their installers are released. Keep every implementation behind a small
-`SpectrumSource` interface so it can be replaced independently later.
-
 ## Recommended implementation
 
 - Language: Rust.
@@ -117,7 +109,6 @@ Keep these seams explicit:
 
 ```text
 platform player adapter -> PlaybackSource -> AppState -> Ratatui view
-platform audio capture  -> SpectrumSource -----^
 art URL/cache           -> ArtworkSource -------^
 keyboard                -> Command dispatcher -> PlaybackSource
 ```
@@ -162,7 +153,7 @@ The release infrastructure is implemented in this repository:
   permissions.
 - `flake.nix` and `flake.lock` expose the Linux package, app, checks,
   development shell, and `nix/home-manager-module.nix`. The package wraps
-  `spotifyd` and `cava` onto `PATH` without changing an existing Spotifyd config.
+  `spotifyd` onto `PATH` without changing an existing Spotifyd config.
 - `.github/workflows/release.yml` accepts manual non-publishing rehearsals and
   semantic tags. It natively builds Linux x86_64/aarch64, macOS Intel/Apple
   Silicon, and Windows x86_64 artifacts, generates checksums, creates GitHub
@@ -226,43 +217,26 @@ implementation tasks.
      the current systemd user-service controller on Linux and add a tested
      `brew services`/launchd controller on macOS plus an appropriate Windows
      process/service controller.
-   - Prove local CoreAudio and WASAPI spectrum capture paths and expose them
-     through `SpectrumSource`.
    - Verify both Apple Silicon and Intel builds in CI; functional validation on
      real hardware is required for every architecture advertised by the formula.
    - Verify the Windows x86_64 build in CI and on a clean Windows machine before
      publishing its installer.
 
-2. Complete the responsive now-playing UI around the live Linux foundation.
-   - The current view renders track, artist, album, playback status,
-     interpolated progress, duration, volume, artwork, help, and
-     connection/error states; retain these while integrating spectrum.
-   - Refine the deliberate normal layout and narrow fallback with the final
-     spectrum widget rather than allowing it to truncate unpredictably.
-
-3. Add spectrum visualization behind the `SpectrumSource` seam.
-   - Launch and supervise the selected platform capture process with a
-     machine-readable raw output format: PipeWire/PulseAudio on Linux and the
-     proven CoreAudio path on macOS or WASAPI path on Windows.
-   - Bound and validate samples so missing, stopped, slow, or malformed `cava`
-     output never blocks input or rendering.
-
-4. Harden the complete runtime and perform live acceptance on Linux, macOS, and
+2. Harden the complete runtime and perform live acceptance on Linux, macOS, and
    Windows.
    - Exercise a fresh Spotifyd OAuth approval, cancellation, service restart,
      network loss, pause/resume, daemon loss, and daemon reconnection.
-   - Test repeated track changes, missing art, missing/stopped spectrum capture,
-     small terminals, shutdown during background work, and terminal restoration
-     after failures.
-   - Repeat equivalent playback, authentication, audio, and failure tests on a
-     clean macOS Homebrew installation.
+   - Test repeated track changes, missing art, small terminals, shutdown during
+     background work, and terminal restoration after failures.
+   - Repeat equivalent playback, authentication, service lifecycle, and failure
+     tests on a clean macOS Homebrew installation.
    - Repeat them on a clean Windows installation produced by the PowerShell
      installer.
    - On each direct-install platform, prove the bundled Spotifyd starts from its
      generated user startup definition, preserves an existing config, and can be
      omitted explicitly without affecting the Spotify TUI installation.
 
-5. Activate and prove the release infrastructure after the external repositories
+3. Activate and prove the release infrastructure after the external repositories
    exist.
    - Run the non-publishing GitHub Actions rehearsal and require every Linux,
      macOS, Windows, Nix, installer, and Homebrew job to pass.
@@ -271,7 +245,7 @@ implementation tasks.
      `kylescudder/homebrew-tap` without direct writes to its default branch.
    - Do not create a public product tag until platform runtime acceptance passes.
 
-6. Cut over the workstation only after acceptance.
+4. Cut over the workstation only after acceptance.
    - Update the dotfiles/Home Manager package and Hyprland workspace-10 launch
      command, perform a clean NixOS rebuild, and retain a simple rollback to
      `spotify_player` until the new setup has been used successfully.
@@ -285,12 +259,11 @@ remaining implementation:
   playback adapter without a Spotify Web API request.
 - Cancelling `spotify-tui auth` is safe and leaves any existing Spotifyd
   credential usable.
-- Metadata, interpolated progress, artwork, and spectrum stay correct across ten
+- Metadata, interpolated progress, and artwork stay correct across ten
   consecutive track changes, including pause/resume and seeks.
 - Network loss and restarting Spotifyd do not crash, freeze, or leave stale
   state or artwork onscreen.
-- Missing/invalid artwork and missing/stopped/malformed spectrum capture degrade
-  cleanly.
+- Missing or invalid artwork degrades cleanly.
 - The complete UI is usable in Ghostty at 80x24 and the normal workspace size,
   in a supported macOS terminal, in Windows Terminal, and in the documented
   narrow fallback.
@@ -329,11 +302,11 @@ show its placeholder without affecting controls. These commands should see the
 same player and normalized track state before the workstation cutover begins.
 
 Equivalent end-to-end validation from a fresh Homebrew install is required on a
-macOS test machine once the macOS playback and audio transports have been
-selected. The Homebrew formula is not release-ready until that validation is
-documented and repeatable.
+macOS test machine once the macOS playback transport has been selected. The
+Homebrew formula is not release-ready until that validation is documented and
+repeatable.
 
 Equivalent end-to-end validation from a fresh PowerShell-script installation is
-required on a clean Windows machine once the Windows playback and WASAPI
-transports have been selected. The Windows installer is not release-ready until
-that validation is documented and repeatable.
+required on a clean Windows machine once the Windows playback transport has been
+selected. The Windows installer is not release-ready until that validation is
+documented and repeatable.

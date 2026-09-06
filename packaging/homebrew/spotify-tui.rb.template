@@ -1,12 +1,11 @@
 class SpotifyTui < Formula
-  desc "Local-first Spotify controller and visualizer for spotifyd"
+  desc "Local-first terminal Spotify controller powered by spotifyd"
   homepage "https://github.com/@REPOSITORY@"
   url "https://github.com/@REPOSITORY@/releases/download/v@VERSION@/spotify-tui-source.tar.gz"
   sha256 "@SOURCE_SHA256@"
   license "MIT"
 
   depends_on "rust" => :build
-  depends_on "cava"
   depends_on "spotifyd"
 
   def install

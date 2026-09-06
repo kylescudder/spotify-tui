@@ -1,6 +1,6 @@
 # Spotify TUI
 
-A local-first Spotify controller and visualizer for `spotifyd`. The current
+A local-first terminal Spotify controller powered by `spotifyd`. The current
 Linux runtime uses the session MPRIS interface for playback and controls, so it
 does not require Spotify Web API access. Version 1 targets a Nix flake on Linux
 and Homebrew on macOS, plus direct POSIX and Windows installers. The macOS and
@@ -67,9 +67,9 @@ Spotify TUI is published through the existing
 brew install kylescudder/tap/spotify-tui
 ```
 
-The formula depends on `spotifyd` and `cava`. The release workflow styles,
-audits, builds, installs, and tests the formula on macOS before opening its tap
-update pull request.
+The formula depends on `spotifyd`. The release workflow styles, audits, builds,
+installs, and tests the formula on macOS before opening its tap update pull
+request.
 
 ### Direct installer on Linux or macOS
 
