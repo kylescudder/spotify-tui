@@ -179,7 +179,10 @@ cargo run
 
 On Linux, the TUI connects to Spotifyd over the graphical session's MPRIS bus.
 It updates from D-Bus signals and reconnects automatically if Spotifyd stops and
-comes back.
+comes back. When Spotifyd is running but inactive, the TUI asks Spotifyd to
+transfer playback to itself automatically. An official Spotify client or phone
+is not required to activate the device. This uses Spotifyd's documented
+[`TransferPlayback` D-Bus control](https://docs.spotifyd.rs/advanced/dbus.html).
 
 ### Playback controls
 
@@ -202,10 +205,10 @@ Inspect the current normalized MPRIS state without starting the TUI with:
 cargo run --bin spotify-tui-diagnose
 ```
 
-The diagnostic reports `connection: disconnected` until Spotifyd has created its
-MPRIS player. Spotifyd may be authenticated and running before that player
-appears; selecting its device and loading a track creates the player in
-Spotifyd 0.4.2.
+The diagnostic is read-only and reports `connection: disconnected` until
+Spotifyd has created its MPRIS player. The main TUI performs the additional
+activation step automatically, so use it—not the diagnostic—to test first-run
+device activation.
 
 ## Authentication
 
@@ -254,8 +257,11 @@ the normal path or its generated configuration lives elsewhere:
 
 Spotifyd also supports Spotify Connect discovery as an alternative: start the
 daemon and select its device from an official Spotify client on the same local
-network. The packaged OAuth flow is more predictable because it does not depend
-on LAN discovery or firewall configuration.
+network. This is optional on Linux: after authentication, Spotify TUI uses
+Spotifyd's local D-Bus control interface to activate the device without a phone.
+If Spotify has a resumable context, press `Space` to continue it. To guarantee a
+specific context on a fresh session, configure `playback.startup_uri` as
+described below.
 
 Spotifyd requires a Spotify Premium account. The current MPRIS and systemd
 integration is Linux-only. Homebrew on macOS and a PowerShell installer on
@@ -301,6 +307,30 @@ The built-in theme names are `spotify`, `midnight`, and `high-contrast`:
 version = 1
 theme = "midnight"
 ```
+
+### Playback options
+
+Playback options live under `[playback]`:
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `startup_uri` | No | Unset | Spotify URI opened after the TUI activates an inactive Spotifyd session. |
+
+Set `startup_uri` when the user should always have something playable without
+first choosing the device from another Spotify client:
+
+```toml
+version = 1
+
+[playback]
+startup_uri = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+```
+
+The value must be a Spotify URI such as `spotify:track:...`,
+`spotify:album:...`, or `spotify:playlist:...`; web URLs are rejected. It is
+opened only as part of activating Spotifyd, not every time the TUI starts while
+Spotifyd already has an active player. Leave it unset to preserve and resume
+Spotify's existing context.
 
 ### Custom theme options
 

@@ -14,12 +14,24 @@ use zbus::{
 
 #[cfg(target_os = "linux")]
 const SPOTIFYD_BUS_NAME: &str = "org.mpris.MediaPlayer2.spotifyd";
+#[cfg(target_os = "linux")]
+const SPOTIFYD_CONTROL_BUS_NAME: &str = "rs.spotifyd";
 
 #[cfg(target_os = "linux")]
 fn is_spotifyd_bus_name(name: &str) -> bool {
-    name == SPOTIFYD_BUS_NAME
+    is_spotifyd_instance_name(name, SPOTIFYD_BUS_NAME)
+}
+
+#[cfg(target_os = "linux")]
+fn is_spotifyd_control_bus_name(name: &str) -> bool {
+    is_spotifyd_instance_name(name, SPOTIFYD_CONTROL_BUS_NAME)
+}
+
+#[cfg(target_os = "linux")]
+fn is_spotifyd_instance_name(name: &str, base: &str) -> bool {
+    name == base
         || name
-            .strip_prefix(SPOTIFYD_BUS_NAME)
+            .strip_prefix(base)
             .and_then(|suffix| suffix.strip_prefix(".instance"))
             .is_some_and(|instance| {
                 !instance.is_empty() && instance.chars().all(|character| character.is_ascii_digit())
@@ -74,13 +86,14 @@ pub struct PlaybackSnapshot {
     pub volume: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PlaybackCommand {
     Toggle,
     Previous,
     Next,
     SeekBy(i64),
     SetVolume(f64),
+    OpenUri(String),
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -91,11 +104,15 @@ pub enum PlaybackError {
     SessionBus(String),
     #[error("MPRIS request failed: {0}")]
     Mpris(String),
+    #[error("Spotifyd control request failed: {0}")]
+    Control(String),
     #[error("the local playback adapter is not implemented for {0}")]
     UnsupportedPlatform(&'static str),
 }
 
 pub trait PlaybackSource {
+    fn activate(&self) -> impl Future<Output = Result<(), PlaybackError>> + Send;
+
     fn snapshot(&self) -> impl Future<Output = Result<PlaybackSnapshot, PlaybackError>> + Send;
 
     fn wait_for_change(
@@ -138,6 +155,17 @@ impl MprisPlaybackSource {
     }
 
     async fn spotifyd_bus_name(&self) -> Result<Option<OwnedBusName>, PlaybackError> {
+        self.spotifyd_named_bus(is_spotifyd_bus_name).await
+    }
+
+    async fn spotifyd_control_bus_name(&self) -> Result<Option<OwnedBusName>, PlaybackError> {
+        self.spotifyd_named_bus(is_spotifyd_control_bus_name).await
+    }
+
+    async fn spotifyd_named_bus(
+        &self,
+        matches: fn(&str) -> bool,
+    ) -> Result<Option<OwnedBusName>, PlaybackError> {
         let dbus = zbus::fdo::DBusProxy::new(&self.connection)
             .await
             .map_err(|error| PlaybackError::SessionBus(error.to_string()))?;
@@ -149,7 +177,7 @@ impl MprisPlaybackSource {
 
         Ok(names
             .into_iter()
-            .filter(|name| is_spotifyd_bus_name(name.as_str()))
+            .filter(|name| matches(name.as_str()))
             .min_by(|left, right| left.as_str().cmp(right.as_str())))
     }
 
@@ -189,6 +217,21 @@ impl MprisPlaybackSource {
 
 #[cfg(target_os = "linux")]
 impl PlaybackSource for MprisPlaybackSource {
+    async fn activate(&self) -> Result<(), PlaybackError> {
+        let service = self
+            .spotifyd_control_bus_name()
+            .await?
+            .ok_or(PlaybackError::Disconnected)?;
+        let controls = SpotifydControlsProxy::builder(&self.connection)
+            .destination(service)
+            .map_err(control_error)?
+            .build()
+            .await
+            .map_err(control_error)?;
+
+        controls.transfer_playback().await.map_err(control_error)
+    }
+
     async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
         let player = self.player().await?;
 
@@ -266,12 +309,17 @@ impl PlaybackSource for MprisPlaybackSource {
                 .set_volume(volume.clamp(0.0, 1.0))
                 .await
                 .map_err(mpris_error),
+            PlaybackCommand::OpenUri(uri) => player.open_uri(&uri).await.map_err(mpris_error),
         }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 impl PlaybackSource for MprisPlaybackSource {
+    async fn activate(&self) -> Result<(), PlaybackError> {
+        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
+    }
+
     async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
         Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
     }
@@ -300,6 +348,8 @@ trait MprisPlayer {
 
     fn seek(&self, offset: i64) -> zbus::Result<()>;
 
+    fn open_uri(&self, uri: &str) -> zbus::Result<()>;
+
     #[zbus(signal)]
     fn seeked(&self, position: i64) -> zbus::Result<()>;
 
@@ -320,8 +370,23 @@ trait MprisPlayer {
 }
 
 #[cfg(target_os = "linux")]
+#[zbus::proxy(
+    default_service = "rs.spotifyd",
+    default_path = "/rs/spotifyd/Controls",
+    interface = "rs.spotifyd.Controls"
+)]
+trait SpotifydControls {
+    fn transfer_playback(&self) -> zbus::Result<()>;
+}
+
+#[cfg(target_os = "linux")]
 fn mpris_error(error: impl fmt::Display) -> PlaybackError {
     PlaybackError::Mpris(error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn control_error(error: impl fmt::Display) -> PlaybackError {
+    PlaybackError::Control(error.to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -395,6 +460,13 @@ mod tests {
     #[test]
     fn recognizes_legacy_spotifyd_mpris_bus_name() {
         assert!(is_spotifyd_bus_name("org.mpris.MediaPlayer2.spotifyd"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recognizes_spotifyd_unique_control_bus_name() {
+        assert!(is_spotifyd_control_bus_name("rs.spotifyd.instance215550"));
+        assert!(!is_spotifyd_control_bus_name("rs.spotifyd.instanceother"));
     }
 
     #[cfg(target_os = "linux")]

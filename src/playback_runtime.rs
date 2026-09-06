@@ -28,18 +28,21 @@ enum WorkerCommand {
 }
 
 impl PlaybackRuntime {
-    pub fn start() -> io::Result<Self> {
-        Self::start_with_factory(MprisPlaybackSource::connect)
+    pub fn start(startup_uri: Option<String>) -> io::Result<Self> {
+        Self::start_with_factory(MprisPlaybackSource::connect, startup_uri)
     }
 
     pub fn start_with_source<S>(source: S) -> io::Result<Self>
     where
         S: PlaybackSource + Send + 'static,
     {
-        Self::start_with_factory(|| async move { Ok(source) })
+        Self::start_with_factory(|| async move { Ok(source) }, None)
     }
 
-    fn start_with_factory<S, F, Fut>(source_factory: F) -> io::Result<Self>
+    fn start_with_factory<S, F, Fut>(
+        source_factory: F,
+        startup_uri: Option<String>,
+    ) -> io::Result<Self>
     where
         S: PlaybackSource + Send + 'static,
         F: FnOnce() -> Fut + Send + 'static,
@@ -69,19 +72,27 @@ impl PlaybackRuntime {
                             return;
                         }
                     };
-                    let mut connected = publish_result(&event_tx, source.snapshot().await);
+                    let (mut connected, mut activation_pending) =
+                        match recover_source(&source).await {
+                            Ok(Some(snapshot)) => (publish_result(&event_tx, Ok(snapshot)), false),
+                            Ok(None) => (false, true),
+                            Err(error) => (publish_result(&event_tx, Err(error)), false),
+                        };
                     let mut reconnect_delay = MIN_RECONNECT_DELAY;
                     loop {
                         if connected {
                             tokio::select! {
                                 change = source.wait_for_change() => {
                                     connected = publish_result(&event_tx, change);
+                                    activation_pending = false;
                                 }
                                 command = command_rx.recv() => {
                                     if !handle_command(
                                         &source,
                                         &event_tx,
                                         &mut connected,
+                                        &mut activation_pending,
+                                        startup_uri.as_deref(),
                                         command,
                                     ).await {
                                         break;
@@ -91,13 +102,27 @@ impl PlaybackRuntime {
                         } else {
                             tokio::select! {
                                 () = tokio::time::sleep(reconnect_delay) => {
-                                    match source.snapshot().await {
-                                        Ok(snapshot) => {
-                                            publish_result(&event_tx, Ok(snapshot));
-                                            connected = true;
+                                    match recover_source(&source).await {
+                                        Ok(Some(snapshot)) => {
+                                            let snapshot = finish_activation(
+                                                &source,
+                                                snapshot,
+                                                activation_pending,
+                                                startup_uri.as_deref(),
+                                            ).await;
+                                            connected = publish_result(&event_tx, snapshot);
+                                            activation_pending = false;
+                                            reconnect_delay = MIN_RECONNECT_DELAY;
+                                        }
+                                        Ok(None) => {
+                                            if !activation_pending {
+                                                let _ = event_tx.send(PlaybackEvent::Connecting);
+                                            }
+                                            activation_pending = true;
                                             reconnect_delay = MIN_RECONNECT_DELAY;
                                         }
                                         Err(_) => {
+                                            activation_pending = false;
                                             reconnect_delay = (reconnect_delay * 2)
                                                 .min(MAX_RECONNECT_DELAY);
                                         }
@@ -108,6 +133,8 @@ impl PlaybackRuntime {
                                         &source,
                                         &event_tx,
                                         &mut connected,
+                                        &mut activation_pending,
+                                        startup_uri.as_deref(),
                                         command,
                                     ).await {
                                         break;
@@ -146,10 +173,41 @@ impl PlaybackRuntime {
 #[error("the playback runtime has stopped")]
 pub struct PlaybackRuntimeError;
 
+async fn recover_source<S: PlaybackSource>(
+    source: &S,
+) -> Result<Option<PlaybackSnapshot>, PlaybackError> {
+    match source.snapshot().await {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(PlaybackError::Disconnected) => {
+            source.activate().await?;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn finish_activation<S: PlaybackSource>(
+    source: &S,
+    snapshot: PlaybackSnapshot,
+    activation_pending: bool,
+    startup_uri: Option<&str>,
+) -> Result<PlaybackSnapshot, PlaybackError> {
+    if activation_pending && let Some(uri) = startup_uri {
+        source
+            .execute(PlaybackCommand::OpenUri(uri.to_owned()))
+            .await?;
+        source.snapshot().await
+    } else {
+        Ok(snapshot)
+    }
+}
+
 async fn handle_command<S: PlaybackSource>(
     source: &S,
     event_tx: &mpsc::Sender<PlaybackEvent>,
     connected: &mut bool,
+    activation_pending: &mut bool,
+    startup_uri: Option<&str>,
     command: Option<WorkerCommand>,
 ) -> bool {
     match command {
@@ -160,11 +218,27 @@ async fn handle_command<S: PlaybackSource>(
                 Err(error) => Err(error),
             };
             *connected = publish_result(event_tx, result);
+            *activation_pending = false;
             true
         }
         Some(WorkerCommand::Reconnect) => {
             let _ = event_tx.send(PlaybackEvent::Connecting);
-            *connected = publish_result(event_tx, source.snapshot().await);
+            match recover_source(source).await {
+                Ok(Some(snapshot)) => {
+                    let snapshot =
+                        finish_activation(source, snapshot, *activation_pending, startup_uri).await;
+                    *connected = publish_result(event_tx, snapshot);
+                    *activation_pending = false;
+                }
+                Ok(None) => {
+                    *connected = false;
+                    *activation_pending = true;
+                }
+                Err(error) => {
+                    *connected = publish_result(event_tx, Err(error));
+                    *activation_pending = false;
+                }
+            }
             true
         }
     }
@@ -194,7 +268,14 @@ impl Drop for PlaybackRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::{future, sync::Arc, time::Duration};
+    use std::{
+        future,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
 
     use super::*;
     use crate::playback::{
@@ -213,6 +294,10 @@ mod tests {
     }
 
     impl PlaybackSource for FakePlaybackSource {
+        fn activate(&self) -> impl Future<Output = Result<(), PlaybackError>> + Send {
+            future::ready(Ok(()))
+        }
+
         fn snapshot(&self) -> impl Future<Output = Result<PlaybackSnapshot, PlaybackError>> + Send {
             future::ready(Ok(self.snapshot.clone()))
         }
@@ -237,6 +322,43 @@ mod tests {
                 Some(message) => Err(PlaybackError::Mpris(message.clone())),
                 None => Ok(()),
             })
+        }
+    }
+
+    struct TransferRequiredSource {
+        snapshot: PlaybackSnapshot,
+        activated: Arc<AtomicBool>,
+        activations: mpsc::Sender<()>,
+        commands: Option<mpsc::Sender<PlaybackCommand>>,
+    }
+
+    impl PlaybackSource for TransferRequiredSource {
+        fn activate(&self) -> impl Future<Output = Result<(), PlaybackError>> + Send {
+            self.activated.store(true, Ordering::Release);
+            let _ = self.activations.send(());
+            future::ready(Ok(()))
+        }
+
+        fn snapshot(&self) -> impl Future<Output = Result<PlaybackSnapshot, PlaybackError>> + Send {
+            future::ready(if self.activated.load(Ordering::Acquire) {
+                Ok(self.snapshot.clone())
+            } else {
+                Err(PlaybackError::Disconnected)
+            })
+        }
+
+        async fn wait_for_change(&self) -> Result<PlaybackSnapshot, PlaybackError> {
+            future::pending().await
+        }
+
+        fn execute(
+            &self,
+            command: PlaybackCommand,
+        ) -> impl Future<Output = Result<(), PlaybackError>> + Send {
+            if let Some(commands) = &self.commands {
+                let _ = commands.send(command);
+            }
+            future::ready(Ok(()))
         }
     }
 
@@ -284,6 +406,75 @@ mod tests {
 
         assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
         assert_eq!(receive_event(&runtime), PlaybackEvent::Updated(expected));
+    }
+
+    #[test]
+    fn runtime_activates_spotifyd_without_an_external_client() {
+        let activated = Arc::new(AtomicBool::new(false));
+        let (activation_tx, activation_rx) = mpsc::channel();
+        let runtime = PlaybackRuntime::start_with_source(TransferRequiredSource {
+            snapshot: snapshot(),
+            activated,
+            activations: activation_tx,
+            commands: None,
+        })
+        .expect("runtime should start");
+
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+        assert_eq!(activation_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
+        assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
+    }
+
+    #[test]
+    fn runtime_opens_the_configured_context_after_activation() {
+        let activated = Arc::new(AtomicBool::new(false));
+        let (activation_tx, activation_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::channel();
+        let source = TransferRequiredSource {
+            snapshot: snapshot(),
+            activated,
+            activations: activation_tx,
+            commands: Some(command_tx),
+        };
+        let runtime = PlaybackRuntime::start_with_factory(
+            || async move { Ok(source) },
+            Some("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".to_owned()),
+        )
+        .expect("runtime should start");
+
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+        assert_eq!(activation_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
+        assert_eq!(
+            command_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(PlaybackCommand::OpenUri(
+                "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".to_owned()
+            ))
+        );
+        assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
+    }
+
+    #[test]
+    fn runtime_preserves_an_existing_context_when_already_active() {
+        let (_change_tx, change_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (command_tx, command_rx) = mpsc::channel();
+        let source = FakePlaybackSource {
+            snapshot: snapshot(),
+            changes: Arc::new(tokio::sync::Mutex::new(change_rx)),
+            commands: Some(command_tx),
+            command_failure: None,
+        };
+        let runtime = PlaybackRuntime::start_with_factory(
+            || async move { Ok(source) },
+            Some("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".to_owned()),
+        )
+        .expect("runtime should start");
+
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+        assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
+        assert_eq!(
+            command_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
     }
 
     #[test]
@@ -544,12 +735,24 @@ mod tests {
             }
         }
 
+        struct MockSpotifydControls {
+            pid: u32,
+            activations: tokio::sync::mpsc::UnboundedSender<u32>,
+        }
+
+        #[zbus::interface(name = "rs.spotifyd.Controls")]
+        impl MockSpotifydControls {
+            fn transfer_playback(&self) {
+                let _ = self.activations.send(self.pid);
+            }
+        }
+
         enum ServiceCommand {
             Stop(mpsc::Sender<()>),
             Start { pid: u32, ready: mpsc::Sender<()> },
         }
 
-        async fn start_service(address: &str, pid: u32) -> zbus::Result<zbus::Connection> {
+        async fn start_mpris(address: &str, pid: u32) -> zbus::Result<zbus::Connection> {
             zbus::connection::Builder::address(address)?
                 .name(format!("org.mpris.MediaPlayer2.spotifyd.instance{pid}"))?
                 .serve_at("/org/mpris/MediaPlayer2", MockMprisPlayer)?
@@ -557,38 +760,77 @@ mod tests {
                 .await
         }
 
+        async fn start_controls(
+            address: &str,
+            pid: u32,
+            activations: tokio::sync::mpsc::UnboundedSender<u32>,
+        ) -> zbus::Result<zbus::Connection> {
+            zbus::connection::Builder::address(address)?
+                .name(format!("rs.spotifyd.instance{pid}"))?
+                .serve_at(
+                    "/rs/spotifyd/Controls",
+                    MockSpotifydControls { pid, activations },
+                )?
+                .build()
+                .await
+        }
+
         let bus = TestBus::start();
         let address = bus.address.clone();
         let (service_tx, mut service_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (activation_tx, mut activation_rx) = tokio::sync::mpsc::unbounded_channel();
         let runtime = PlaybackRuntime::start_with_factory(move || async move {
-            let mut service = Some(
-                start_service(&address, 100)
+            let mut current_pid = Some(100);
+            let mut controls = Some(
+                start_controls(&address, 100, activation_tx.clone())
                     .await
-                    .expect("initial mock player should start"),
+                    .expect("initial mock controls should start"),
             );
+            let mut mpris = None;
             let source = MprisPlaybackSource::connect_to_address(address.clone()).await?;
             tokio::spawn(async move {
-                while let Some(command) = service_rx.recv().await {
-                    match command {
-                        ServiceCommand::Stop(ready) => {
-                            drop(service.take());
-                            let _ = ready.send(());
+                loop {
+                    tokio::select! {
+                        activation = activation_rx.recv() => {
+                            let Some(pid) = activation else {
+                                break;
+                            };
+                            if current_pid == Some(pid) && mpris.is_none() {
+                                mpris = Some(
+                                    start_mpris(&address, pid)
+                                        .await
+                                        .expect("activated mock player should start"),
+                                );
+                            }
                         }
-                        ServiceCommand::Start { pid, ready } => {
-                            assert!(service.is_none(), "mock player should be stopped");
-                            service = Some(
-                                start_service(&address, pid)
-                                    .await
-                                    .expect("replacement mock player should start"),
-                            );
-                            let _ = ready.send(());
+                        command = service_rx.recv() => {
+                            match command {
+                                Some(ServiceCommand::Stop(ready)) => {
+                                    drop(mpris.take());
+                                    drop(controls.take());
+                                    current_pid = None;
+                                    let _ = ready.send(());
+                                }
+                                Some(ServiceCommand::Start { pid, ready }) => {
+                                    assert!(controls.is_none(), "mock daemon should be stopped");
+                                    current_pid = Some(pid);
+                                    controls = Some(
+                                        start_controls(&address, pid, activation_tx.clone())
+                                            .await
+                                            .expect("replacement mock controls should start"),
+                                    );
+                                    let _ = ready.send(());
+                                }
+                                None => break,
+                            }
                         }
                     }
                 }
-                drop(service);
+                drop(mpris);
+                drop(controls);
             });
             Ok(source)
-        })
+        }, None)
         .expect("runtime should start");
 
         assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
@@ -613,6 +855,7 @@ mod tests {
         started_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("replacement mock player should start");
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
         assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
     }
 }

@@ -6,6 +6,9 @@ uses semantic versioning once public releases begin.
 ## Unreleased
 
 - Initial Ratatui application and deterministic playback state model.
+- Phone-free Linux startup through Spotifyd's local D-Bus transfer control,
+  including automatic recovery after daemon restarts and an optional configured
+  startup Spotify URI.
 - Linux Spotifyd MPRIS diagnostic and delegated Spotifyd authentication flow.
 - Discovery of Spotifyd's process-unique MPRIS bus name, with compatibility for
   the legacy fixed name.

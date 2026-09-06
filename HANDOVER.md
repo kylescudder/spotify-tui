@@ -37,6 +37,9 @@ Version 1 must provide:
   schemes, with polished defaults when no config is present.
 - First-run account onboarding delegated to `spotifyd authenticate`; the TUI
   must never collect, inspect, or store Spotify credentials itself.
+- Phone-free Linux session bootstrap: activate an authenticated Spotifyd over
+  its local D-Bus control interface, preserving a resumable context or opening
+  an optional configured startup Spotify URI.
 - Clear empty, disconnected, paused, loading, and error states.
 - A visually intentional layout that works at common terminal sizes.
 
@@ -68,6 +71,13 @@ Read properties and subscribe to D-Bus change signals instead of polling on a
 short timer. Interpolate progress locally between authoritative position updates.
 Treat reconnecting to MPRIS as normal runtime behavior: `spotifyd` may start,
 stop, or temporarily disappear while the TUI remains open.
+
+Spotifyd exposes `rs.spotifyd.Controls.TransferPlayback` before its MPRIS player
+exists. Use that local interface to make Spotifyd active, then rediscover the
+process-unique MPRIS name. Do not require the user to select the device from a
+phone or another Spotify client. If `playback.startup_uri` is configured, open
+it through MPRIS after activation; otherwise preserve Spotify's existing
+resumable context.
 
 Spotifyd does not expose the Linux D-Bus/MPRIS interface on macOS or Windows.
 Before publishing installers for either platform, prototype and select
@@ -189,9 +199,13 @@ below pass live acceptance.
 
 The Linux MPRIS vertical slice is implemented: the diagnostic has been validated
 against Spotifyd 0.4.2, the TUI subscribes to property and seek signals, commands
-flow through `PlaybackSource`, and the supervisor automatically reconnects with
-bounded backoff. Deterministic fake-source tests cover updates, commands,
-failures, manual retry, and daemon recovery. The remaining work is:
+flow through `PlaybackSource`, and the supervisor automatically activates an
+inactive Spotifyd and reconnects with bounded backoff. An optional
+`playback.startup_uri` guarantees a playable context without a phone.
+Deterministic fake-source tests cover updates, commands, failures, activation,
+startup URI loading, manual retry, and daemon recovery; a private-D-Bus test
+covers activation and rediscovery across process-unique names. The remaining
+work is:
 
 1. Prove and implement the macOS and Windows platform adapters.
    - Prototype non-Web-API playback/control transports against Spotifyd on each
@@ -265,6 +279,8 @@ remaining implementation:
 
 - Starting before Spotifyd shows the correct state and reconnects later without
   restarting the TUI or busy-polling the platform playback transport.
+- Starting an authenticated but inactive Spotifyd activates it locally without
+  a phone; a configured `playback.startup_uri` begins that context.
 - Play/pause, previous, next, seek, and volume work through the platform's local
   playback adapter without a Spotify Web API request.
 - A fresh `spotify-tui auth` browser flow succeeds, cancellation is safe, and the

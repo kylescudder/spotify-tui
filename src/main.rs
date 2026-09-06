@@ -68,7 +68,7 @@ fn run_auth_command(arguments: &[OsString]) -> Result<(), Box<dyn Error>> {
 fn run_tui_app() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
     let mut app = AppState::default();
-    let playback = PlaybackRuntime::start()?;
+    let playback = PlaybackRuntime::start(config.startup_uri().map(str::to_owned))?;
 
     loop {
         match run_tui_session(&mut app, config.theme(), &playback)? {

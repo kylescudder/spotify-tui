@@ -18,6 +18,7 @@ const DEFAULT_THEME_NAME: &str = "spotify";
 pub struct Config {
     theme_name: String,
     theme: Theme,
+    startup_uri: Option<String>,
     source_path: Option<PathBuf>,
 }
 
@@ -26,6 +27,7 @@ impl Default for Config {
         Self {
             theme_name: DEFAULT_THEME_NAME.to_owned(),
             theme: Theme::spotify(),
+            startup_uri: None,
             source_path: None,
         }
     }
@@ -66,6 +68,10 @@ impl Config {
 
     pub fn theme_name(&self) -> &str {
         &self.theme_name
+    }
+
+    pub fn startup_uri(&self) -> Option<&str> {
+        self.startup_uri.as_deref()
     }
 
     pub fn source_path(&self) -> Option<&Path> {
@@ -217,6 +223,8 @@ pub enum ConfigError {
         field: &'static str,
         value: String,
     },
+    #[error("invalid playback.startup_uri '{0}'; use a Spotify URI beginning with spotify:")]
+    InvalidStartupUri(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,6 +235,8 @@ struct ConfigDocument {
     theme: String,
     #[serde(default)]
     themes: BTreeMap<String, ThemeDefinition>,
+    #[serde(default)]
+    playback: PlaybackDefinition,
 }
 
 impl ConfigDocument {
@@ -255,11 +265,36 @@ impl ConfigDocument {
             .or_else(|| custom_themes.get(&self.theme).cloned())
             .ok_or_else(|| ConfigError::UnknownTheme(self.theme.clone()))?;
 
+        let startup_uri = validate_startup_uri(self.playback.startup_uri)?;
+
         Ok(Config {
             theme_name: self.theme,
             theme,
+            startup_uri,
             source_path,
         })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlaybackDefinition {
+    startup_uri: Option<String>,
+}
+
+fn validate_startup_uri(value: Option<String>) -> Result<Option<String>, ConfigError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let normalized = value.trim();
+    let valid = normalized
+        .strip_prefix("spotify:")
+        .is_some_and(|path| path.contains(':') && !path.chars().any(char::is_whitespace));
+
+    if valid {
+        Ok(Some(normalized.to_owned()))
+    } else {
+        Err(ConfigError::InvalidStartupUri(value))
     }
 }
 
@@ -398,6 +433,42 @@ theme = "midnight"
 
         assert_eq!(config.theme_name(), "midnight");
         assert_eq!(config.theme(), &Theme::midnight());
+    }
+
+    #[test]
+    fn selects_an_optional_startup_context() {
+        let config = Config::from_toml(
+            r#"
+version = 1
+
+[playback]
+startup_uri = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+"#,
+        )
+        .expect("startup context should resolve");
+
+        assert_eq!(
+            config.startup_uri(),
+            Some("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M")
+        );
+    }
+
+    #[test]
+    fn rejects_a_non_spotify_startup_context() {
+        let error = Config::from_toml(
+            r#"
+version = 1
+
+[playback]
+startup_uri = "https://example.com/playlist"
+"#,
+        )
+        .expect_err("non-Spotify startup context should be rejected");
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidStartupUri(uri) if uri == "https://example.com/playlist"
+        ));
     }
 
     #[test]
