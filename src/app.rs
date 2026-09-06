@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
-use crate::playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata};
+use crate::{
+    artwork::Artwork,
+    playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -40,7 +43,23 @@ pub enum AppEvent {
     },
     PlaybackDisconnected,
     PlaybackFailed(String),
+    ArtworkLoaded {
+        track_revision: u64,
+        artwork: Artwork,
+    },
+    ArtworkFailed {
+        track_revision: u64,
+        message: String,
+    },
     QuitRequested,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArtworkState {
+    Unavailable,
+    Loading,
+    Ready(Artwork),
+    Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +103,7 @@ impl PlaybackState {
 pub struct AppState {
     connection: ConnectionState,
     playback: Option<PlaybackState>,
+    artwork: ArtworkState,
     track_revision: u64,
     should_quit: bool,
 }
@@ -93,6 +113,7 @@ impl Default for AppState {
         Self {
             connection: ConnectionState::Connecting,
             playback: None,
+            artwork: ArtworkState::Unavailable,
             track_revision: 0,
             should_quit: false,
         }
@@ -108,6 +129,10 @@ impl AppState {
         self.playback.as_ref()
     }
 
+    pub const fn artwork(&self) -> &ArtworkState {
+        &self.artwork
+    }
+
     pub const fn track_revision(&self) -> u64 {
         self.track_revision
     }
@@ -121,6 +146,7 @@ impl AppState {
             AppEvent::ConnectionPending => {
                 self.connection = ConnectionState::Connecting;
                 self.playback = None;
+                self.artwork = ArtworkState::Unavailable;
             }
             AppEvent::PlaybackUpdated {
                 snapshot,
@@ -129,11 +155,26 @@ impl AppState {
             AppEvent::PlaybackDisconnected => {
                 self.connection = ConnectionState::Disconnected;
                 self.playback = None;
+                self.artwork = ArtworkState::Unavailable;
             }
             AppEvent::PlaybackFailed(message) => {
                 self.connection = ConnectionState::Error(message);
                 self.playback = None;
+                self.artwork = ArtworkState::Unavailable;
             }
+            AppEvent::ArtworkLoaded {
+                track_revision,
+                artwork,
+            } if track_revision == self.track_revision => {
+                self.artwork = ArtworkState::Ready(artwork);
+            }
+            AppEvent::ArtworkFailed {
+                track_revision,
+                message,
+            } if track_revision == self.track_revision => {
+                self.artwork = ArtworkState::Failed(message);
+            }
+            AppEvent::ArtworkLoaded { .. } | AppEvent::ArtworkFailed { .. } => {}
             AppEvent::QuitRequested => self.should_quit = true,
         }
     }
@@ -146,6 +187,11 @@ impl AppState {
 
         if track_changed {
             self.track_revision = self.track_revision.saturating_add(1);
+            self.artwork = if snapshot.track.art_url.is_some() {
+                ArtworkState::Loading
+            } else {
+                ArtworkState::Unavailable
+            };
         }
 
         self.connection = ConnectionState::Connected;
@@ -162,6 +208,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::DynamicImage;
 
     fn snapshot(track_id: &str, status: PlaybackStatus, position: Duration) -> PlaybackSnapshot {
         PlaybackSnapshot {
@@ -218,6 +265,52 @@ mod tests {
             Duration::from_secs(2)
         );
         assert_eq!(state.track_revision(), 2);
+        assert_eq!(state.artwork(), &ArtworkState::Loading);
+    }
+
+    #[test]
+    fn stale_artwork_is_ignored_after_a_track_change() {
+        let observed_at = Instant::now();
+        let mut state = AppState::default();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: snapshot("one", PlaybackStatus::Playing, Duration::ZERO),
+            observed_at,
+        });
+        let stale_revision = state.track_revision();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: snapshot("two", PlaybackStatus::Playing, Duration::ZERO),
+            observed_at,
+        });
+
+        state.reduce(AppEvent::ArtworkLoaded {
+            track_revision: stale_revision,
+            artwork: Artwork::new(
+                "https://example.com/one.jpg".to_owned(),
+                DynamicImage::new_rgb8(4, 4),
+            ),
+        });
+
+        assert_eq!(state.artwork(), &ArtworkState::Loading);
+    }
+
+    #[test]
+    fn current_artwork_is_published_to_the_view_state() {
+        let mut state = AppState::default();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: snapshot("one", PlaybackStatus::Playing, Duration::ZERO),
+            observed_at: Instant::now(),
+        });
+        let artwork = Artwork::new(
+            "https://example.com/one.jpg".to_owned(),
+            DynamicImage::new_rgb8(4, 4),
+        );
+
+        state.reduce(AppEvent::ArtworkLoaded {
+            track_revision: state.track_revision(),
+            artwork: artwork.clone(),
+        });
+
+        assert_eq!(state.artwork(), &ArtworkState::Ready(artwork));
     }
 
     #[test]

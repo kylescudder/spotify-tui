@@ -184,6 +184,14 @@ transfer playback to itself automatically. An official Spotify client or phone
 is not required to activate the device. This uses Spotifyd's documented
 [`TransferPlayback` D-Bus control](https://docs.spotifyd.rs/advanced/dbus.html).
 
+Album artwork is loaded directly from the `mpris:artUrl` supplied by Spotifyd;
+it does not use the Spotify Web API. Downloads and image decoding run off the
+input/render thread with HTTPS enforcement, a five-second timeout, size and
+decode limits, and an eight-entry in-memory cache. Ghostty uses its Kitty
+graphics support when detected. Other terminals fall back automatically to
+Unicode half blocks, while missing or invalid artwork displays a text
+placeholder.
+
 ### Playback controls
 
 | Key | Action |

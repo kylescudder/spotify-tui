@@ -15,6 +15,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use spotify_tui::{
     app::{AppEvent, AppState, Command},
+    artwork::{ArtworkEvent, ArtworkRenderer, ArtworkRuntime},
     auth::{self, AuthOutcome},
     cli::{self, LaunchMode},
     config::{Config, Theme},
@@ -69,9 +70,10 @@ fn run_tui_app() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
     let mut app = AppState::default();
     let playback = PlaybackRuntime::start(config.startup_uri().map(str::to_owned))?;
+    let artwork = ArtworkRuntime::start()?;
 
     loop {
-        match run_tui_session(&mut app, config.theme(), &playback)? {
+        match run_tui_session(&mut app, config.theme(), &playback, &artwork)? {
             SessionOutcome::Quit => return Ok(()),
             SessionOutcome::Authenticate => {
                 println!("Starting Spotifyd authentication…");
@@ -111,9 +113,24 @@ fn run_tui_session(
     app: &mut AppState,
     theme: &Theme,
     playback: &PlaybackRuntime,
+    artwork: &ArtworkRuntime,
 ) -> io::Result<SessionOutcome> {
     let mut terminal = start_terminal()?;
-    let result = run(&mut terminal, app, theme, playback);
+    let mut artwork_renderer = match ArtworkRenderer::detect(theme) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            let _ = restore_terminal(&mut terminal);
+            return Err(error);
+        }
+    };
+    let result = run(
+        &mut terminal,
+        app,
+        theme,
+        playback,
+        artwork,
+        &mut artwork_renderer,
+    );
     let restore_result = restore_terminal(&mut terminal);
 
     match result {
@@ -154,10 +171,14 @@ fn run(
     app: &mut AppState,
     theme: &Theme,
     playback: &PlaybackRuntime,
+    artwork: &ArtworkRuntime,
+    artwork_renderer: &mut ArtworkRenderer,
 ) -> io::Result<SessionOutcome> {
     loop {
-        drain_playback_events(app, playback);
-        terminal.draw(|frame| ui::render(frame, app, theme))?;
+        drain_playback_events(app, playback, artwork);
+        drain_artwork_events(app, artwork);
+        artwork_renderer.sync(app.track_revision(), app.artwork());
+        terminal.draw(|frame| ui::render(frame, app, theme, artwork_renderer))?;
 
         if event::poll(Duration::from_millis(250))?
             && let Event::Key(key) = event::read()?
@@ -202,18 +223,51 @@ fn run(
     }
 }
 
-fn drain_playback_events(app: &mut AppState, playback: &PlaybackRuntime) {
+fn drain_playback_events(app: &mut AppState, playback: &PlaybackRuntime, artwork: &ArtworkRuntime) {
     while let Some(event) = playback.try_event() {
-        let event = match event {
-            PlaybackEvent::Connecting => AppEvent::ConnectionPending,
-            PlaybackEvent::Updated(snapshot) => AppEvent::PlaybackUpdated {
-                snapshot,
-                observed_at: Instant::now(),
+        match event {
+            PlaybackEvent::Connecting => app.reduce(AppEvent::ConnectionPending),
+            PlaybackEvent::Updated(snapshot) => {
+                let previous_revision = app.track_revision();
+                let art_url = snapshot.track.art_url.clone();
+                app.reduce(AppEvent::PlaybackUpdated {
+                    snapshot,
+                    observed_at: Instant::now(),
+                });
+                if app.track_revision() != previous_revision
+                    && let Some(url) = art_url
+                    && let Err(error) = artwork.load(app.track_revision(), url)
+                {
+                    app.reduce(AppEvent::ArtworkFailed {
+                        track_revision: app.track_revision(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+            PlaybackEvent::Disconnected => app.reduce(AppEvent::PlaybackDisconnected),
+            PlaybackEvent::Failed(message) => app.reduce(AppEvent::PlaybackFailed(message)),
+        }
+    }
+}
+
+fn drain_artwork_events(app: &mut AppState, artwork: &ArtworkRuntime) {
+    while let Some(event) = artwork.try_event() {
+        app.reduce(match event {
+            ArtworkEvent::Loaded {
+                track_revision,
+                artwork,
+            } => AppEvent::ArtworkLoaded {
+                track_revision,
+                artwork,
             },
-            PlaybackEvent::Disconnected => AppEvent::PlaybackDisconnected,
-            PlaybackEvent::Failed(message) => AppEvent::PlaybackFailed(message),
-        };
-        app.reduce(event);
+            ArtworkEvent::Failed {
+                track_revision,
+                message,
+            } => AppEvent::ArtworkFailed {
+                track_revision,
+                message,
+            },
+        });
     }
 }
 

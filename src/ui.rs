@@ -7,11 +7,17 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AppState, ConnectionState},
+    app::{AppState, ArtworkState, ConnectionState},
+    artwork::ArtworkRenderer,
     config::Theme,
 };
 
-pub fn render(frame: &mut Frame, state: &AppState, theme: &Theme) {
+pub fn render(
+    frame: &mut Frame,
+    state: &AppState,
+    theme: &Theme,
+    artwork_renderer: &mut ArtworkRenderer,
+) {
     let area = frame.area();
     let block = Block::new()
         .borders(Borders::ALL)
@@ -35,7 +41,7 @@ pub fn render(frame: &mut Frame, state: &AppState, theme: &Theme) {
     if let Some(playback) = state.playback()
         && matches!(state.connection(), ConnectionState::Connected)
     {
-        render_playback(frame, inner, playback, theme);
+        render_playback(frame, inner, state, playback, theme, artwork_renderer);
     } else {
         render_connection_state(frame, inner, state, theme);
     }
@@ -77,10 +83,12 @@ fn render_connection_state(
 fn render_playback(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
+    state: &AppState,
     playback: &crate::app::PlaybackState,
     theme: &Theme,
+    artwork_renderer: &mut ArtworkRenderer,
 ) {
-    let compact = area.height < 12;
+    let compact = area.height < 16 || area.width < 60;
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if compact {
@@ -93,40 +101,38 @@ fn render_playback(
             ]
         } else {
             [
-                Constraint::Length(4),
+                Constraint::Fill(1),
                 Constraint::Length(1),
                 Constraint::Length(3),
-                Constraint::Fill(1),
+                Constraint::Length(0),
                 Constraint::Length(1),
             ]
         })
         .margin(1)
         .split(area);
 
-    let title = playback.track().title.as_deref().unwrap_or("Unknown track");
-    let artists = if playback.track().artists.is_empty() {
-        "Unknown artist".to_owned()
+    if compact {
+        render_metadata(frame, layout[0], playback, theme, true);
     } else {
-        playback.track().artists.join(", ")
-    };
-    let album = playback.track().album.as_deref().unwrap_or("Unknown album");
-    let mut metadata = vec![
-        Line::from(title).style(
-            Style::default()
-                .fg(theme.accent())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Line::from(artists).style(Style::default().fg(theme.foreground())),
-    ];
-    if !compact {
-        metadata.push(Line::from(album).style(Style::default().fg(theme.muted())));
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(38),
+                Constraint::Length(2),
+                Constraint::Fill(1),
+            ])
+            .split(layout[0]);
+        render_artwork(frame, columns[0], state.artwork(), theme, artwork_renderer);
+        let metadata_area = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Length(5),
+                Constraint::Fill(1),
+            ])
+            .split(columns[2])[1];
+        render_metadata(frame, metadata_area, playback, theme, false);
     }
-    frame.render_widget(
-        Paragraph::new(metadata)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true }),
-        layout[0],
-    );
 
     let volume = if playback.volume().is_finite() {
         playback.volume().clamp(0.0, 1.0)
@@ -199,6 +205,79 @@ fn render_playback(
             .alignment(Alignment::Center),
         layout[4],
     );
+}
+
+fn render_metadata(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    playback: &crate::app::PlaybackState,
+    theme: &Theme,
+    compact: bool,
+) {
+    let title = playback.track().title.as_deref().unwrap_or("Unknown track");
+    let artists = if playback.track().artists.is_empty() {
+        "Unknown artist".to_owned()
+    } else {
+        playback.track().artists.join(", ")
+    };
+    let album = playback.track().album.as_deref().unwrap_or("Unknown album");
+    let mut metadata = vec![
+        Line::from(title).style(
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::from(artists).style(Style::default().fg(theme.foreground())),
+    ];
+    if !compact {
+        metadata.push(Line::from(album).style(Style::default().fg(theme.muted())));
+    }
+    frame.render_widget(
+        Paragraph::new(metadata)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_artwork(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    artwork: &ArtworkState,
+    theme: &Theme,
+    renderer: &mut ArtworkRenderer,
+) {
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border()))
+        .title(Line::from(" Artwork ").style(Style::default().fg(theme.muted())));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let label = match artwork {
+        ArtworkState::Loading => "Loading artwork…",
+        ArtworkState::Ready(_) => "Rendering artwork…",
+        ArtworkState::Unavailable => "No artwork",
+        ArtworkState::Failed(_) => "Artwork unavailable",
+    };
+    let label_area = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .split(inner)[1];
+    frame.render_widget(
+        Paragraph::new(label)
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center),
+        label_area,
+    );
+
+    if matches!(artwork, ArtworkState::Ready(_)) {
+        renderer.render(frame, inner);
+    }
 }
 
 fn status_color_for_playback(playback: &crate::app::PlaybackState, theme: &Theme) -> Color {
@@ -303,9 +382,18 @@ background = "#010203"
         .expect("test theme should resolve");
         let backend = TestBackend::new(40, 12);
         let mut terminal = Terminal::new(backend).expect("test backend is infallible");
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(config.theme()).expect("renderer should start");
 
         terminal
-            .draw(|frame| render(frame, &AppState::default(), config.theme()))
+            .draw(|frame| {
+                render(
+                    frame,
+                    &AppState::default(),
+                    config.theme(),
+                    &mut artwork_renderer,
+                );
+            })
             .expect("test backend is infallible");
 
         let buffer = terminal.backend().buffer();
@@ -338,9 +426,12 @@ background = "#010203"
         });
         let mut terminal =
             Terminal::new(TestBackend::new(80, 24)).expect("test backend is infallible");
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
 
         terminal
-            .draw(|frame| render(frame, &state, Config::default().theme()))
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
             .expect("test backend is infallible");
 
         let text = rendered_text(&terminal);
@@ -351,8 +442,75 @@ background = "#010203"
             "0:12 / 3:00",
             "75%",
             "play/pause",
+            "No artwork",
         ] {
             assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
         }
+    }
+
+    #[test]
+    fn artwork_loading_state_is_visible_in_the_normal_layout() {
+        let mut state = AppState::default();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: PlaybackSnapshot {
+                status: PlaybackStatus::Playing,
+                track: TrackMetadata {
+                    track_id: Some("spotify:track:one".to_owned()),
+                    title: Some("Live track".to_owned()),
+                    artists: vec!["Artist".to_owned()],
+                    album: Some("Album".to_owned()),
+                    duration: Some(Duration::from_secs(180)),
+                    art_url: Some("https://example.com/art.jpg".to_owned()),
+                },
+                position: Duration::ZERO,
+                volume: 0.75,
+            },
+            observed_at: Instant::now(),
+        });
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test backend is infallible");
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        assert!(rendered_text(&terminal).contains("Loading artwork…"));
+    }
+
+    #[test]
+    fn narrow_layout_prioritizes_playback_over_the_artwork_panel() {
+        let mut state = AppState::default();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: PlaybackSnapshot {
+                status: PlaybackStatus::Paused,
+                track: TrackMetadata {
+                    track_id: Some("spotify:track:one".to_owned()),
+                    title: Some("Live track".to_owned()),
+                    artists: vec!["Artist".to_owned()],
+                    album: Some("Album".to_owned()),
+                    duration: Some(Duration::from_secs(180)),
+                    art_url: Some("https://example.com/art.jpg".to_owned()),
+                },
+                position: Duration::from_secs(12),
+                volume: 0.75,
+            },
+            observed_at: Instant::now(),
+        });
+        let mut terminal =
+            Terminal::new(TestBackend::new(50, 12)).expect("test backend is infallible");
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Live track"));
+        assert!(!text.contains("Artwork"));
     }
 }

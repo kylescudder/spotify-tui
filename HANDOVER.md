@@ -86,10 +86,14 @@ controls, volume, and reconnect behavior without making Spotify Web API access
 mandatory. Record those decisions before implementation; do not silently ship
 reduced, display-only builds.
 
-On Linux, album art should come from the MPRIS `mpris:artUrl` value. The macOS
-and Windows playback adapters must supply equivalent artwork metadata or a
-documented local alternative. Cache downloaded art by URL or track ID, bound
-the cache size, and render a text placeholder whenever art is missing or invalid.
+On Linux, album art comes from the MPRIS `mpris:artUrl` value. `ArtworkSource`
+enforces HTTPS, download timeouts, transfer and decode limits, downsizes large
+images, and keeps a bounded in-memory LRU cache. Download/decode and terminal
+resize/encoding run on separate workers. `AppState` rejects results whose track
+revision is stale. Ghostty uses the detected Kitty protocol; unsupported
+terminals use Unicode half blocks, and missing or invalid art renders a text
+placeholder. The macOS and Windows playback adapters must supply equivalent
+artwork metadata or a documented local alternative.
 
 The audio spectrum cannot come from MPRIS. On Linux, use `cava` configured with
 PipeWire/PulseAudio capture and a machine-readable raw output consumed by the
@@ -109,7 +113,7 @@ their installers are released. Keep every implementation behind a small
 - Errors: typed domain errors internally; concise status messages in the UI.
 - Tests: state reducer and formatting tests without a live Spotify account.
 
-Keep these boundaries explicit:
+Keep these seams explicit:
 
 ```text
 platform player adapter -> PlaybackSource -> AppState -> Ratatui view
@@ -204,8 +208,15 @@ inactive Spotifyd and reconnects with bounded backoff. An optional
 `playback.startup_uri` guarantees a playable context without a phone.
 Deterministic fake-source tests cover updates, commands, failures, activation,
 startup URI loading, manual retry, and daemon recovery; a private-D-Bus test
-covers activation and rediscovery across process-unique names. The remaining
-work is:
+covers activation and rediscovery across process-unique names. The artwork
+vertical slice is also implemented behind `ArtworkSource`, including bounded
+fetch/decode, in-memory caching, stale-result rejection, Kitty rendering, a
+half-block fallback, and normal/narrow layout tests. The remaining work is:
+
+Live validation on `stevie` has confirmed Spotifyd OAuth, phone-free activation,
+automatic recovery after restarting Spotifyd, and a successful `nix run .`
+build. Keep those paths in regression coverage, but they are no longer open
+implementation tasks.
 
 1. Prove and implement the macOS and Windows platform adapters.
    - Prototype non-Web-API playback/control transports against Spotifyd on each
@@ -224,26 +235,19 @@ work is:
 
 2. Complete the responsive now-playing UI around the live Linux foundation.
    - The current view renders track, artist, album, playback status,
-     interpolated progress, duration, volume, help, and connection/error states;
-     retain these while integrating artwork and spectrum.
+     interpolated progress, duration, volume, artwork, help, and
+     connection/error states; retain these while integrating spectrum.
    - Refine the deliberate normal layout and narrow fallback with the final
-     artwork and spectrum widgets rather than allowing them to truncate
-     unpredictably.
+     spectrum widget rather than allowing it to truncate unpredictably.
 
-3. Add artwork behind an `ArtworkSource` boundary.
-   - Fetch `mpris:artUrl` with strict timeouts and size limits, decode it off the
-     render path, and use a bounded cache keyed by URL or track identity.
-   - Prefer Kitty graphics in Ghostty, provide a block-character/text fallback,
-     and reject stale results when the track revision changes.
-
-4. Add spectrum visualization behind a `SpectrumSource` boundary.
+3. Add spectrum visualization behind the `SpectrumSource` seam.
    - Launch and supervise the selected platform capture process with a
      machine-readable raw output format: PipeWire/PulseAudio on Linux and the
      proven CoreAudio path on macOS or WASAPI path on Windows.
    - Bound and validate samples so missing, stopped, slow, or malformed `cava`
      output never blocks input or rendering.
 
-5. Harden the complete runtime and perform live acceptance on Linux, macOS, and
+4. Harden the complete runtime and perform live acceptance on Linux, macOS, and
    Windows.
    - Exercise a fresh Spotifyd OAuth approval, cancellation, service restart,
      network loss, pause/resume, daemon loss, and daemon reconnection.
@@ -258,7 +262,7 @@ work is:
      generated user startup definition, preserves an existing config, and can be
      omitted explicitly without affecting the Spotify TUI installation.
 
-6. Activate and prove the release infrastructure after the external repositories
+5. Activate and prove the release infrastructure after the external repositories
    exist.
    - Run the non-publishing GitHub Actions rehearsal and require every Linux,
      macOS, Windows, Nix, installer, and Homebrew job to pass.
@@ -267,7 +271,7 @@ work is:
      `kylescudder/homebrew-tap` without direct writes to its default branch.
    - Do not create a public product tag until platform runtime acceptance passes.
 
-7. Cut over the workstation only after acceptance.
+6. Cut over the workstation only after acceptance.
    - Update the dotfiles/Home Manager package and Hyprland workspace-10 launch
      command, perform a clean NixOS rebuild, and retain a simple rollback to
      `spotify_player` until the new setup has been used successfully.
@@ -277,14 +281,10 @@ work is:
 Version 1 is complete when all of the following are reproducible after the
 remaining implementation:
 
-- Starting before Spotifyd shows the correct state and reconnects later without
-  restarting the TUI or busy-polling the platform playback transport.
-- Starting an authenticated but inactive Spotifyd activates it locally without
-  a phone; a configured `playback.startup_uri` begins that context.
 - Play/pause, previous, next, seek, and volume work through the platform's local
   playback adapter without a Spotify Web API request.
-- A fresh `spotify-tui auth` browser flow succeeds, cancellation is safe, and the
-  credential remains exclusively owned by Spotifyd.
+- Cancelling `spotify-tui auth` is safe and leaves any existing Spotifyd
+  credential usable.
 - Metadata, interpolated progress, artwork, and spectrum stay correct across ten
   consecutive track changes, including pause/resume and seeks.
 - Network loss and restarting Spotifyd do not crash, freeze, or leave stale
@@ -323,8 +323,10 @@ cargo run --bin spotify-tui
 
 In the TUI, verify Space, `p`/`n`, `h`/`l`, and `j`/`k`; then stop and restart
 Spotifyd while leaving the TUI open and confirm it disconnects and recovers.
-These commands should see the same player and normalized track state before the
-workstation cutover begins.
+Cycle through ten tracks and confirm each artwork image replaces the previous
+one, then test at 80x24 and a narrower terminal. Missing or invalid artwork must
+show its placeholder without affecting controls. These commands should see the
+same player and normalized track state before the workstation cutover begins.
 
 Equivalent end-to-end validation from a fresh Homebrew install is required on a
 macOS test machine once the macOS playback and audio transports have been

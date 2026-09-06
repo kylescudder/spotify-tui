@@ -20,6 +20,9 @@ uses semantic versioning once public releases begin.
   and session configuration so it runs deterministically in Nix build sandboxes.
 - A live now-playing view with track metadata, interpolated progress, playback
   state, volume, and discoverable arrow-key and Vim-style bindings.
+- Asynchronous album artwork from Spotifyd metadata with HTTPS, download and
+  decode limits, a bounded in-memory cache, stale-track protection, Ghostty
+  Kitty graphics, Unicode half-block fallback, and responsive placeholders.
 - TOML configuration with built-in and custom colour themes.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,
   direct POSIX and PowerShell installers, checksums, and build provenance.

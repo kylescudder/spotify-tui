@@ -10,11 +10,15 @@ homepage = "https://github.com/kylescudder/spotify-tui"
 
 [dependencies]
 crossterm = "0.29.0"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+lru = "0.18.4"
 ratatui = "0.30.2"
+ratatui-image = { version = "11.0.8", default-features = false, features = ["crossterm"] }
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
 toml = "1.1.5"
+ureq = { version = "3.4.1", default-features = false, features = ["rustls"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util = { version = "0.3.31", default-features = false, features = ["std"] }

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod artwork;
 pub mod auth;
 pub mod cli;
 pub mod config;
