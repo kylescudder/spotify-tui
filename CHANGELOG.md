@@ -7,6 +7,8 @@ uses semantic versioning once public releases begin.
 
 - Initial Ratatui application and deterministic playback state model.
 - Linux Spotifyd MPRIS diagnostic and delegated Spotifyd authentication flow.
+- Discovery of Spotifyd's process-unique MPRIS bus name, with compatibility for
+  the legacy fixed name.
 - TOML configuration with built-in and custom colour themes.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,
   direct POSIX and PowerShell installers, checksums, and build provenance.

@@ -59,7 +59,10 @@ use_mpris = true
 dbus_type = "session"
 ```
 
-Expected bus name: `org.mpris.MediaPlayer2.spotifyd`.
+Spotifyd 0.3.4 and newer use a process-unique bus name of the form
+`org.mpris.MediaPlayer2.spotifyd.instance<PID>`; older versions used
+`org.mpris.MediaPlayer2.spotifyd`. Discover the currently owned matching name
+rather than assuming either literal value.
 
 Read properties and subscribe to D-Bus change signals instead of polling on a
 short timer. Interpolate progress locally between authoritative position updates.
@@ -300,9 +303,7 @@ Run these on `stevie` inside the graphical session once Spotifyd is available:
 ```bash
 playerctl -p spotifyd status
 playerctl -p spotifyd metadata
-busctl --user introspect \
-  org.mpris.MediaPlayer2.spotifyd \
-  /org/mpris/MediaPlayer2
+busctl --user list | rg 'org.mpris.MediaPlayer2.spotifyd'
 cargo run --bin spotify-tui-diagnose
 ```
 

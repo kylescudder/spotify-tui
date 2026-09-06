@@ -6,12 +6,23 @@ use thiserror::Error;
 #[cfg(target_os = "linux")]
 use zbus::{
     Connection,
-    names::BusName,
+    names::OwnedBusName,
     zvariant::{OwnedObjectPath, OwnedValue},
 };
 
 #[cfg(target_os = "linux")]
 const SPOTIFYD_BUS_NAME: &str = "org.mpris.MediaPlayer2.spotifyd";
+
+#[cfg(target_os = "linux")]
+fn is_spotifyd_bus_name(name: &str) -> bool {
+    name == SPOTIFYD_BUS_NAME
+        || name
+            .strip_prefix(SPOTIFYD_BUS_NAME)
+            .and_then(|suffix| suffix.strip_prefix(".instance"))
+            .is_some_and(|instance| {
+                !instance.is_empty() && instance.chars().all(|character| character.is_ascii_digit())
+            })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaybackStatus {
@@ -95,16 +106,20 @@ impl MprisPlaybackSource {
         Ok(Self { connection })
     }
 
-    async fn spotifyd_is_connected(&self) -> Result<bool, PlaybackError> {
+    async fn spotifyd_bus_name(&self) -> Result<Option<OwnedBusName>, PlaybackError> {
         let dbus = zbus::fdo::DBusProxy::new(&self.connection)
             .await
             .map_err(|error| PlaybackError::SessionBus(error.to_string()))?;
-        let name = BusName::try_from(SPOTIFYD_BUS_NAME)
-            .map_err(|error| PlaybackError::Mpris(error.to_string()))?;
 
-        dbus.name_has_owner(name)
+        let names = dbus
+            .list_names()
             .await
-            .map_err(|error| PlaybackError::SessionBus(error.to_string()))
+            .map_err(|error| PlaybackError::SessionBus(error.to_string()))?;
+
+        Ok(names
+            .into_iter()
+            .filter(|name| is_spotifyd_bus_name(name.as_str()))
+            .min_by(|left, right| left.as_str().cmp(right.as_str())))
     }
 }
 
@@ -118,11 +133,15 @@ impl MprisPlaybackSource {
 #[cfg(target_os = "linux")]
 impl PlaybackSource for MprisPlaybackSource {
     async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
-        if !self.spotifyd_is_connected().await? {
-            return Err(PlaybackError::Disconnected);
-        }
+        let service = self
+            .spotifyd_bus_name()
+            .await?
+            .ok_or(PlaybackError::Disconnected)?;
 
-        let player = MprisPlayerProxy::new(&self.connection)
+        let player = MprisPlayerProxy::builder(&self.connection)
+            .destination(service)
+            .map_err(|error| PlaybackError::Mpris(error.to_string()))?
+            .build()
             .await
             .map_err(|error| PlaybackError::Mpris(error.to_string()))?;
 
@@ -227,5 +246,31 @@ mod tests {
             microseconds_to_duration(1_500_000),
             Duration::from_millis(1_500)
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recognizes_spotifyd_unique_mpris_bus_name() {
+        assert!(is_spotifyd_bus_name(
+            "org.mpris.MediaPlayer2.spotifyd.instance215550"
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recognizes_legacy_spotifyd_mpris_bus_name() {
+        assert!(is_spotifyd_bus_name("org.mpris.MediaPlayer2.spotifyd"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_unrelated_mpris_bus_names() {
+        assert!(!is_spotifyd_bus_name("org.mpris.MediaPlayer2.spotify"));
+        assert!(!is_spotifyd_bus_name(
+            "org.mpris.MediaPlayer2.spotifyd.instance"
+        ));
+        assert!(!is_spotifyd_bus_name(
+            "org.mpris.MediaPlayer2.spotifyd.instanceother"
+        ));
     }
 }
