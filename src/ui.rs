@@ -219,31 +219,26 @@ struct NowPlayingStage {
 
 fn now_playing_stage(area: Rect) -> NowPlayingStage {
     const MAX_STAGE_WIDTH: u16 = 112;
-    const MAX_ARTWORK_INNER_HEIGHT: u16 = 24;
+    const MAX_ARTWORK_HEIGHT: u16 = 24;
     const MIN_METADATA_WIDTH: u16 = 24;
     const COLUMN_GAP: u16 = 2;
-    const PANEL_BORDERS: u16 = 2;
 
     let stage_width = area.width.min(MAX_STAGE_WIDTH);
     let available_artwork_width = stage_width
         .saturating_sub(COLUMN_GAP)
         .saturating_sub(MIN_METADATA_WIDTH);
-    let artwork_inner_height = area
+    let artwork_height = area
         .height
-        .saturating_sub(PANEL_BORDERS)
-        .min(MAX_ARTWORK_INNER_HEIGHT)
-        .min(available_artwork_width.saturating_sub(PANEL_BORDERS) / 2);
-    let artwork_width = artwork_inner_height
-        .saturating_mul(2)
-        .saturating_add(PANEL_BORDERS);
-    let stage_height = artwork_inner_height.saturating_add(PANEL_BORDERS);
+        .min(MAX_ARTWORK_HEIGHT)
+        .min(available_artwork_width / 2);
+    let artwork_width = artwork_height.saturating_mul(2);
 
     NowPlayingStage {
         area: Rect::new(
             area.x + area.width.saturating_sub(stage_width) / 2,
-            area.y + area.height.saturating_sub(stage_height) / 2,
+            area.y + area.height.saturating_sub(artwork_height) / 2,
             stage_width,
-            stage_height,
+            artwork_height,
         ),
         artwork_width,
     }
@@ -289,15 +284,8 @@ fn render_artwork(
     theme: &Theme,
     renderer: &mut ArtworkRenderer,
 ) {
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border()))
-        .title(Line::from(" Artwork ").style(Style::default().fg(theme.muted())));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     match artwork {
-        ArtworkState::Ready(_) => renderer.render(frame, inner),
+        ArtworkState::Ready(_) => renderer.render(frame, area),
         ArtworkState::Loading | ArtworkState::Unavailable | ArtworkState::Failed(_) => {
             let label = match artwork {
                 ArtworkState::Loading => "Loading artwork…",
@@ -312,7 +300,7 @@ fn render_artwork(
                     Constraint::Length(1),
                     Constraint::Fill(1),
                 ])
-                .split(inner)[1];
+                .split(area)[1];
             frame.render_widget(
                 Paragraph::new(label)
                     .style(Style::default().fg(theme.muted()))
@@ -639,23 +627,15 @@ background = "#010203"
 
         let text = rendered_text(&terminal);
         let lines = text.lines().collect::<Vec<_>>();
-        let artwork_title_row = lines
-            .iter()
-            .position(|line| line.contains("Artwork"))
-            .expect("artwork title should be visible");
         let loading_row = lines
             .iter()
             .position(|line| line.contains("Loading artwork…"))
             .expect("loading state should be visible");
+        let viewport_center = 35;
 
         assert!(
-            artwork_title_row >= 10,
-            "artwork starts at row {artwork_title_row}"
-        );
-        assert!(
-            loading_row - artwork_title_row <= 14,
-            "artwork panel spans at least {} rows",
-            loading_row - artwork_title_row
+            loading_row.abs_diff(viewport_center) <= 5,
+            "artwork placeholder is centered at row {loading_row}, expected near row {viewport_center}"
         );
     }
 
@@ -697,5 +677,40 @@ background = "#010203"
             .expect("test backend is infallible");
 
         assert!(!rendered_text(&terminal).contains("Rendering artwork…"));
+    }
+
+    #[test]
+    fn artwork_is_rendered_without_a_decorative_frame_or_title() {
+        let artwork = ArtworkState::Ready(Artwork::new(
+            "https://example.com/art.jpg".to_owned(),
+            DynamicImage::new_rgb8(8, 8),
+        ));
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+        let mut terminal =
+            Terminal::new(TestBackend::new(30, 15)).expect("test backend is infallible");
+
+        terminal
+            .draw(|frame| {
+                render_artwork(
+                    frame,
+                    Rect::new(2, 2, 20, 10),
+                    &artwork,
+                    theme.theme(),
+                    &mut artwork_renderer,
+                );
+            })
+            .expect("test backend is infallible");
+
+        let buffer = terminal.backend().buffer();
+        assert_ne!(
+            buffer
+                .cell((2, 2))
+                .expect("artwork corner should exist")
+                .symbol(),
+            "┌"
+        );
+        assert!(!rendered_text(&terminal).contains("Artwork"));
     }
 }
