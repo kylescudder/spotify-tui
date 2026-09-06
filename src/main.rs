@@ -1,4 +1,11 @@
-use std::{env, error::Error, ffi::OsString, io, process::ExitCode, time::Duration};
+use std::{
+    env,
+    error::Error,
+    ffi::OsString,
+    io,
+    process::ExitCode,
+    time::{Duration, Instant},
+};
 
 use crossterm::{
     event::{self, Event, KeyEventKind},
@@ -11,7 +18,10 @@ use spotify_tui::{
     auth::{self, AuthOutcome},
     cli::{self, LaunchMode},
     config::{Config, Theme},
-    input, ui,
+    input,
+    playback::PlaybackCommand,
+    playback_runtime::{PlaybackEvent, PlaybackRuntime},
+    ui,
 };
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
@@ -58,14 +68,18 @@ fn run_auth_command(arguments: &[OsString]) -> Result<(), Box<dyn Error>> {
 fn run_tui_app() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
     let mut app = AppState::default();
+    let playback = PlaybackRuntime::start()?;
 
     loop {
-        match run_tui_session(&mut app, config.theme())? {
+        match run_tui_session(&mut app, config.theme(), &playback)? {
             SessionOutcome::Quit => return Ok(()),
             SessionOutcome::Authenticate => {
                 println!("Starting Spotifyd authentication…");
                 match auth::authenticate(&[]) {
-                    Ok(outcome) => apply_auth_outcome(&mut app, &outcome),
+                    Ok(outcome) => {
+                        apply_auth_outcome(&mut app, &outcome);
+                        reconnect(&mut app, &playback);
+                    }
                     Err(error) => app.reduce(AppEvent::PlaybackFailed(format!(
                         "authentication failed: {error}"
                     ))),
@@ -93,9 +107,13 @@ fn report_restart_warning(outcome: &AuthOutcome) {
     }
 }
 
-fn run_tui_session(app: &mut AppState, theme: &Theme) -> io::Result<SessionOutcome> {
+fn run_tui_session(
+    app: &mut AppState,
+    theme: &Theme,
+    playback: &PlaybackRuntime,
+) -> io::Result<SessionOutcome> {
     let mut terminal = start_terminal()?;
-    let result = run(&mut terminal, app, theme);
+    let result = run(&mut terminal, app, theme, playback);
     let restore_result = restore_terminal(&mut terminal);
 
     match result {
@@ -131,8 +149,14 @@ enum SessionOutcome {
     Authenticate,
 }
 
-fn run(terminal: &mut Tui, app: &mut AppState, theme: &Theme) -> io::Result<SessionOutcome> {
+fn run(
+    terminal: &mut Tui,
+    app: &mut AppState,
+    theme: &Theme,
+    playback: &PlaybackRuntime,
+) -> io::Result<SessionOutcome> {
     loop {
+        drain_playback_events(app, playback);
         terminal.draw(|frame| ui::render(frame, app, theme))?;
 
         if event::poll(Duration::from_millis(250))?
@@ -146,13 +170,62 @@ fn run(terminal: &mut Tui, app: &mut AppState, theme: &Theme) -> io::Result<Sess
                     return Ok(SessionOutcome::Quit);
                 }
                 Command::Authenticate => return Ok(SessionOutcome::Authenticate),
-                Command::RetryConnection => app.reduce(AppEvent::ConnectionPending),
-                Command::TogglePlayback
-                | Command::PreviousTrack
-                | Command::NextTrack
-                | Command::Seek { .. }
-                | Command::SetVolume(_) => {}
+                Command::RetryConnection => reconnect(app, playback),
+                Command::TogglePlayback => {
+                    dispatch(app, playback, PlaybackCommand::Toggle);
+                }
+                Command::PreviousTrack => {
+                    dispatch(app, playback, PlaybackCommand::Previous);
+                }
+                Command::NextTrack => {
+                    dispatch(app, playback, PlaybackCommand::Next);
+                }
+                Command::Seek { direction, amount } => {
+                    let amount = i64::try_from(amount.as_micros()).unwrap_or(i64::MAX);
+                    let offset = match direction {
+                        spotify_tui::app::SeekDirection::Backward => -amount,
+                        spotify_tui::app::SeekDirection::Forward => amount,
+                    };
+                    dispatch(app, playback, PlaybackCommand::SeekBy(offset));
+                }
+                Command::AdjustVolume(amount) => {
+                    if let Some(current) = app.playback().map(|state| state.volume()) {
+                        dispatch(
+                            app,
+                            playback,
+                            PlaybackCommand::SetVolume((current + amount).clamp(0.0, 1.0)),
+                        );
+                    }
+                }
             }
         }
+    }
+}
+
+fn drain_playback_events(app: &mut AppState, playback: &PlaybackRuntime) {
+    while let Some(event) = playback.try_event() {
+        let event = match event {
+            PlaybackEvent::Connecting => AppEvent::ConnectionPending,
+            PlaybackEvent::Updated(snapshot) => AppEvent::PlaybackUpdated {
+                snapshot,
+                observed_at: Instant::now(),
+            },
+            PlaybackEvent::Disconnected => AppEvent::PlaybackDisconnected,
+            PlaybackEvent::Failed(message) => AppEvent::PlaybackFailed(message),
+        };
+        app.reduce(event);
+    }
+}
+
+fn reconnect(app: &mut AppState, playback: &PlaybackRuntime) {
+    app.reduce(AppEvent::ConnectionPending);
+    if let Err(error) = playback.reconnect() {
+        app.reduce(AppEvent::PlaybackFailed(error.to_string()));
+    }
+}
+
+fn dispatch(app: &mut AppState, playback: &PlaybackRuntime, command: PlaybackCommand) {
+    if let Err(error) = playback.dispatch(command) {
+        app.reduce(AppEvent::PlaybackFailed(error.to_string()));
     }
 }

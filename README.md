@@ -177,7 +177,24 @@ Run from a Rust checkout with:
 cargo run
 ```
 
-Press `q`, `Esc`, or `Ctrl-C` to quit.
+On Linux, the TUI connects to Spotifyd over the graphical session's MPRIS bus.
+It updates from D-Bus signals and reconnects automatically if Spotifyd stops and
+comes back.
+
+### Playback controls
+
+| Key | Action |
+| --- | --- |
+| `Space` | Play or pause. |
+| `p` | Previous track. |
+| `n` | Next track. |
+| `h` or `Left` | Seek backward 5 seconds. |
+| `l` or `Right` | Seek forward 5 seconds. |
+| `j` or `Down` | Lower volume by 5%. |
+| `k` or `Up` | Raise volume by 5%. |
+| `a` | Leave the TUI temporarily and run Spotifyd authentication. |
+| `r` | Retry the local playback connection immediately. |
+| `q`, `Esc`, or `Ctrl-C` | Quit. |
 
 Inspect the current normalized MPRIS state without starting the TUI with:
 
@@ -185,8 +202,10 @@ Inspect the current normalized MPRIS state without starting the TUI with:
 cargo run --bin spotify-tui-diagnose
 ```
 
-The diagnostic reports `connection: disconnected` when `spotifyd` does not own
-its expected session-bus name.
+The diagnostic reports `connection: disconnected` until Spotifyd has created its
+MPRIS player. Spotifyd may be authenticated and running before that player
+appears; selecting its device and loading a track creates the player in
+Spotifyd 0.4.2.
 
 ## Authentication
 

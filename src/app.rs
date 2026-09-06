@@ -21,7 +21,7 @@ pub enum Command {
         direction: SeekDirection,
         amount: Duration,
     },
-    SetVolume(f64),
+    AdjustVolume(f64),
     Quit,
 }
 

@@ -173,11 +173,10 @@ The release infrastructure is implemented in this repository:
 - `LICENSE`, `CHANGELOG.md`, the README installation/verification instructions,
   and `docs/releasing.md` complete the operator-facing release surface.
 
-This checkout still has no GitHub remote. The intended canonical product
-repository is `kylescudder/spotify-tui`, and releases publish formula updates
-through the existing `kylescudder/homebrew-tap` repository (the
-`kylescudder/tap` Homebrew tap). The remaining infrastructure activation is to
-create the product repository, enable branch protection and attestations,
+The canonical product repository is `kylescudder/spotify-tui`, and releases
+publish formula updates through the existing `kylescudder/homebrew-tap`
+repository (the `kylescudder/tap` Homebrew tap). The remaining infrastructure
+activation is to enable the required repository protections and attestations,
 configure the cross-repository tap token described in `docs/releasing.md`, and
 run the workflows on GitHub. The workflow stamps the actual product repository
 into release installers at build time, so forks also remain functional.
@@ -188,17 +187,13 @@ below pass live acceptance.
 
 ## Remaining execution sequence
 
-1. Finish the Linux MPRIS runtime and command seam.
-   - Validate the existing diagnostic against a playing Spotifyd instance on the
-     graphical session bus.
-   - Add a long-lived async supervisor that subscribes to MPRIS property and seek
-     signals, dispatches normalized events to `AppState`, and reconnects with
-     bounded backoff when Spotifyd disappears.
-   - Extend `PlaybackSource` with play/pause, previous, next, relative seek, and
-     volume operations. Cover command mapping, source failures, stale events,
-     and reconnection with fakes so development does not require Spotify.
+The Linux MPRIS vertical slice is implemented: the diagnostic has been validated
+against Spotifyd 0.4.2, the TUI subscribes to property and seek signals, commands
+flow through `PlaybackSource`, and the supervisor automatically reconnects with
+bounded backoff. Deterministic fake-source tests cover updates, commands,
+failures, manual retry, and daemon recovery. The remaining work is:
 
-2. Prove and implement the macOS and Windows platform adapters.
+1. Prove and implement the macOS and Windows platform adapters.
    - Prototype non-Web-API playback/control transports against Spotifyd on each
      platform, record the selected designs, and implement them behind
      `PlaybackSource`.
@@ -213,27 +208,28 @@ below pass live acceptance.
    - Verify the Windows x86_64 build in CI and on a clean Windows machine before
      publishing its installer.
 
-3. Build the complete responsive now-playing UI and keyboard dispatcher.
-   - Render track, artist, album, playback status, interpolated progress,
-     duration, volume, help, and all loading/empty/disconnected/error states.
-   - Provide discoverable arrow-key and Vim-style bindings for every v1 control.
-   - Use a deliberate normal layout and a usable narrow fallback rather than
-     allowing widgets to truncate unpredictably.
+2. Complete the responsive now-playing UI around the live Linux foundation.
+   - The current view renders track, artist, album, playback status,
+     interpolated progress, duration, volume, help, and connection/error states;
+     retain these while integrating artwork and spectrum.
+   - Refine the deliberate normal layout and narrow fallback with the final
+     artwork and spectrum widgets rather than allowing them to truncate
+     unpredictably.
 
-4. Add artwork behind an `ArtworkSource` boundary.
+3. Add artwork behind an `ArtworkSource` boundary.
    - Fetch `mpris:artUrl` with strict timeouts and size limits, decode it off the
      render path, and use a bounded cache keyed by URL or track identity.
    - Prefer Kitty graphics in Ghostty, provide a block-character/text fallback,
      and reject stale results when the track revision changes.
 
-5. Add spectrum visualization behind a `SpectrumSource` boundary.
+4. Add spectrum visualization behind a `SpectrumSource` boundary.
    - Launch and supervise the selected platform capture process with a
      machine-readable raw output format: PipeWire/PulseAudio on Linux and the
      proven CoreAudio path on macOS or WASAPI path on Windows.
    - Bound and validate samples so missing, stopped, slow, or malformed `cava`
      output never blocks input or rendering.
 
-6. Harden the complete runtime and perform live acceptance on Linux, macOS, and
+5. Harden the complete runtime and perform live acceptance on Linux, macOS, and
    Windows.
    - Exercise a fresh Spotifyd OAuth approval, cancellation, service restart,
      network loss, pause/resume, daemon loss, and daemon reconnection.
@@ -248,7 +244,7 @@ below pass live acceptance.
      generated user startup definition, preserves an existing config, and can be
      omitted explicitly without affecting the Spotify TUI installation.
 
-7. Activate and prove the release infrastructure after the external repositories
+6. Activate and prove the release infrastructure after the external repositories
    exist.
    - Run the non-publishing GitHub Actions rehearsal and require every Linux,
      macOS, Windows, Nix, installer, and Homebrew job to pass.
@@ -257,7 +253,7 @@ below pass live acceptance.
      `kylescudder/homebrew-tap` without direct writes to its default branch.
    - Do not create a public product tag until platform runtime acceptance passes.
 
-8. Cut over the workstation only after acceptance.
+7. Cut over the workstation only after acceptance.
    - Update the dotfiles/Home Manager package and Hyprland workspace-10 launch
      command, perform a clean NixOS rebuild, and retain a simple rollback to
      `spotify_player` until the new setup has been used successfully.
@@ -298,15 +294,19 @@ remaining implementation:
 
 ## Remaining Linux live validation commands
 
-Run these on `stevie` inside the graphical session once Spotifyd is available:
+After pulling this branch, run these on `stevie` inside the graphical session
+with a track loaded in Spotifyd:
 
 ```bash
 playerctl -p spotifyd status
 playerctl -p spotifyd metadata
-busctl --user list | rg 'org.mpris.MediaPlayer2.spotifyd'
+busctl --user list | grep 'org.mpris.MediaPlayer2.spotifyd'
 cargo run --bin spotify-tui-diagnose
+cargo run --bin spotify-tui
 ```
 
+In the TUI, verify Space, `p`/`n`, `h`/`l`, and `j`/`k`; then stop and restart
+Spotifyd while leaving the TUI open and confirm it disconnects and recovers.
 These commands should see the same player and normalized track state before the
 workstation cutover begins.
 

@@ -9,6 +9,10 @@ uses semantic versioning once public releases begin.
 - Linux Spotifyd MPRIS diagnostic and delegated Spotifyd authentication flow.
 - Discovery of Spotifyd's process-unique MPRIS bus name, with compatibility for
   the legacy fixed name.
+- Live Linux MPRIS property and seek subscriptions, bounded automatic
+  reconnection, and play/pause, track, seek, and volume controls in the TUI.
+- A live now-playing view with track metadata, interpolated progress, playback
+  state, volume, and discoverable arrow-key and Vim-style bindings.
 - TOML configuration with built-in and custom colour themes.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,
   direct POSIX and PowerShell installers, checksums, and build provenance.

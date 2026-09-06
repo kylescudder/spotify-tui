@@ -1,6 +1,8 @@
 use std::{fmt, future::Future, time::Duration};
 
 #[cfg(target_os = "linux")]
+use futures_util::StreamExt;
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use thiserror::Error;
 #[cfg(target_os = "linux")]
@@ -72,6 +74,15 @@ pub struct PlaybackSnapshot {
     pub volume: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlaybackCommand {
+    Toggle,
+    Previous,
+    Next,
+    SeekBy(i64),
+    SetVolume(f64),
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PlaybackError {
     #[error("spotifyd is disconnected")]
@@ -86,6 +97,15 @@ pub enum PlaybackError {
 
 pub trait PlaybackSource {
     fn snapshot(&self) -> impl Future<Output = Result<PlaybackSnapshot, PlaybackError>> + Send;
+
+    fn wait_for_change(
+        &self,
+    ) -> impl Future<Output = Result<PlaybackSnapshot, PlaybackError>> + Send;
+
+    fn execute(
+        &self,
+        command: PlaybackCommand,
+    ) -> impl Future<Output = Result<(), PlaybackError>> + Send;
 }
 
 #[cfg(target_os = "linux")]
@@ -121,6 +141,20 @@ impl MprisPlaybackSource {
             .filter(|name| is_spotifyd_bus_name(name.as_str()))
             .min_by(|left, right| left.as_str().cmp(right.as_str())))
     }
+
+    async fn player(&self) -> Result<MprisPlayerProxy<'_>, PlaybackError> {
+        let service = self
+            .spotifyd_bus_name()
+            .await?
+            .ok_or(PlaybackError::Disconnected)?;
+
+        MprisPlayerProxy::builder(&self.connection)
+            .destination(service)
+            .map_err(mpris_error)?
+            .build()
+            .await
+            .map_err(mpris_error)
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -133,17 +167,7 @@ impl MprisPlaybackSource {
 #[cfg(target_os = "linux")]
 impl PlaybackSource for MprisPlaybackSource {
     async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
-        let service = self
-            .spotifyd_bus_name()
-            .await?
-            .ok_or(PlaybackError::Disconnected)?;
-
-        let player = MprisPlayerProxy::builder(&self.connection)
-            .destination(service)
-            .map_err(|error| PlaybackError::Mpris(error.to_string()))?
-            .build()
-            .await
-            .map_err(|error| PlaybackError::Mpris(error.to_string()))?;
+        let player = self.player().await?;
 
         let (status, metadata, position, volume) = tokio::try_join!(
             player.playback_status(),
@@ -151,7 +175,7 @@ impl PlaybackSource for MprisPlaybackSource {
             player.position(),
             player.volume(),
         )
-        .map_err(|error| PlaybackError::Mpris(error.to_string()))?;
+        .map_err(mpris_error)?;
 
         Ok(PlaybackSnapshot {
             status: status.into(),
@@ -160,11 +184,74 @@ impl PlaybackSource for MprisPlaybackSource {
             volume,
         })
     }
+
+    async fn wait_for_change(&self) -> Result<PlaybackSnapshot, PlaybackError> {
+        let player = self.player().await?;
+        let service = player.inner().destination().to_owned();
+        let properties = zbus::fdo::PropertiesProxy::builder(&self.connection)
+            .destination(service)
+            .map_err(mpris_error)?
+            .path("/org/mpris/MediaPlayer2")
+            .map_err(mpris_error)?
+            .build()
+            .await
+            .map_err(mpris_error)?;
+        let mut property_changes = properties
+            .receive_properties_changed()
+            .await
+            .map_err(mpris_error)?;
+        let mut seeked = player.receive_seeked().await.map_err(mpris_error)?;
+        let mut owner_changes = player
+            .inner()
+            .receive_owner_changed()
+            .await
+            .map_err(mpris_error)?;
+
+        tokio::select! {
+            change = property_changes.next() => {
+                change.ok_or(PlaybackError::Disconnected)?;
+            }
+            change = seeked.next() => {
+                change.ok_or(PlaybackError::Disconnected)?;
+            }
+            owner = owner_changes.next() => {
+                match owner {
+                    Some(Some(_)) => {}
+                    Some(None) | None => return Err(PlaybackError::Disconnected),
+                }
+            }
+        }
+
+        self.snapshot().await
+    }
+
+    async fn execute(&self, command: PlaybackCommand) -> Result<(), PlaybackError> {
+        let player = self.player().await?;
+
+        match command {
+            PlaybackCommand::Toggle => player.play_pause().await.map_err(mpris_error),
+            PlaybackCommand::Previous => player.previous().await.map_err(mpris_error),
+            PlaybackCommand::Next => player.next().await.map_err(mpris_error),
+            PlaybackCommand::SeekBy(offset) => player.seek(offset).await.map_err(mpris_error),
+            PlaybackCommand::SetVolume(volume) => player
+                .set_volume(volume.clamp(0.0, 1.0))
+                .await
+                .map_err(mpris_error),
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
 impl PlaybackSource for MprisPlaybackSource {
     async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
+        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
+    }
+
+    async fn wait_for_change(&self) -> Result<PlaybackSnapshot, PlaybackError> {
+        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
+    }
+
+    async fn execute(&self, _command: PlaybackCommand) -> Result<(), PlaybackError> {
         Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
     }
 }
@@ -176,6 +263,17 @@ impl PlaybackSource for MprisPlaybackSource {
     interface = "org.mpris.MediaPlayer2.Player"
 )]
 trait MprisPlayer {
+    fn play_pause(&self) -> zbus::Result<()>;
+
+    fn previous(&self) -> zbus::Result<()>;
+
+    fn next(&self) -> zbus::Result<()>;
+
+    fn seek(&self, offset: i64) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn seeked(&self, position: i64) -> zbus::Result<()>;
+
     #[zbus(property)]
     fn playback_status(&self) -> zbus::Result<String>;
 
@@ -187,6 +285,14 @@ trait MprisPlayer {
 
     #[zbus(property)]
     fn volume(&self) -> zbus::Result<f64>;
+
+    #[zbus(property)]
+    fn set_volume(&self, volume: f64) -> zbus::Result<()>;
+}
+
+#[cfg(target_os = "linux")]
+fn mpris_error(error: impl fmt::Display) -> PlaybackError {
+    PlaybackError::Mpris(error.to_string())
 }
 
 #[cfg(target_os = "linux")]
