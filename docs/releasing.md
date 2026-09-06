@@ -44,14 +44,27 @@ The matrix produces:
 - `spotify-tui-aarch64-apple-darwin.tar.gz`
 - `spotify-tui-x86_64-pc-windows-msvc.zip`
 - `spotify-tui-source.tar.gz`
+- `spotifyd-0.4.2-source.tar.gz`
 - `install.sh` and `install.ps1`
 - `spotify-tui.rb`
 - `SHA256SUMS`
 
-The Linux archives are musl builds to avoid depending on a particular glibc
-version. Archives contain `spotify-tui`, the diagnostic binary, README, licence,
-and example themes. Release-time generation replaces `@REPOSITORY@` in the
-installer sources with the actual GitHub repository.
+The Spotify TUI executables in the Linux archives are musl builds to avoid
+depending on a particular glibc version. Every direct archive also contains a
+pinned Spotifyd runtime, its GPLv3 licence, third-party notices, README, and
+example themes. Linux uses Spotifyd's upstream default binaries after checking
+hard-coded SHA-512 values. macOS and Windows build the portable Rodio backend
+from the exact upstream commit; upstream does not currently publish a Windows
+binary. The matching complete Spotifyd source archive is included in the same
+release and checked against a pinned SHA-256 value. Unlike the musl Spotify TUI
+binary, upstream's Linux Spotifyd binary remains dynamically linked to standard
+audio, D-Bus, OpenSSL, and system libraries; release smoke tests install and
+exercise those runtime libraries explicitly.
+
+Release-time generation replaces `@REPOSITORY@` in the installer sources with
+the actual GitHub repository. The installers preserve existing Spotifyd
+installations and configurations, install the bundled runtime when necessary,
+and test user-level startup integration without requiring elevated privileges.
 
 ## Publish a release
 
@@ -87,10 +100,12 @@ workflow never publishes a partial release. A tag also fails before building if
 ## Checksums and trust
 
 Both installers require HTTPS and reject an artifact unless its SHA-256 matches
-the release manifest. Checksums detect corruption and mismatched assets; they do
-not by themselves protect against a compromised release account. Users who need
-cryptographic provenance should download rather than pipe the installer and run
-`gh attestation verify` against the repository before execution.
+the release manifest. Release assembly also verifies downloaded upstream
+Spotifyd binaries and source before they enter the bundle. Checksums detect
+corruption and mismatched assets; they do not by themselves protect against a
+compromised release account. Users who need cryptographic provenance should
+download rather than pipe the installer and run `gh attestation verify` against
+the repository before execution.
 
 The scripts support local non-HTTPS paths only behind explicitly test-only
 switches. CI uses those switches to test success and checksum-rejection paths

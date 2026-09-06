@@ -2,14 +2,22 @@
 param(
     [string]$Version = $env:SPOTIFY_TUI_VERSION,
     [string]$InstallDir = $env:SPOTIFY_TUI_INSTALL_DIR,
+    [string]$ConfigDir = $env:SPOTIFY_TUI_SPOTIFYD_CONFIG_DIR,
     [string]$Repository = $env:SPOTIFY_TUI_REPOSITORY,
     [string]$ReleaseBaseUrl = $env:SPOTIFY_TUI_RELEASE_BASE_URL,
     [switch]$NoModifyPath,
+    [switch]$NoDependencies,
+    [switch]$ForceDependencies,
+    [switch]$NoService,
     [switch]$AllowInsecureForTests
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($NoDependencies -and $ForceDependencies) {
+    throw "-NoDependencies and -ForceDependencies cannot be used together."
+}
 
 if ([string]::IsNullOrWhiteSpace($Repository)) {
     $Repository = "@REPOSITORY@"
@@ -30,6 +38,16 @@ if (-not [string]::IsNullOrWhiteSpace($Version)) {
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\spotify-tui\bin"
+}
+$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+if (-not $NoDependencies -and [string]::IsNullOrWhiteSpace($ConfigDir)) {
+    if ([string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        throw "APPDATA is unset. Pass -ConfigDir or -NoDependencies."
+    }
+    $ConfigDir = Join-Path $env:APPDATA "spotifyd"
+}
+if (-not $NoDependencies) {
+    $ConfigDir = [System.IO.Path]::GetFullPath($ConfigDir)
 }
 
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
@@ -99,9 +117,85 @@ try {
         }
     }
 
+    $spotifydPath = $null
+    $installBundledSpotifyd = $false
+    if (-not $NoDependencies) {
+        $installedSpotifyd = Join-Path $InstallDir "spotifyd.exe"
+        $spotifydCommand = Get-Command "spotifyd.exe" -ErrorAction SilentlyContinue
+        if (-not $ForceDependencies -and (Test-Path -LiteralPath $installedSpotifyd -PathType Leaf)) {
+            $spotifydPath = $installedSpotifyd
+        } elseif (-not $ForceDependencies -and $null -ne $spotifydCommand) {
+            $spotifydPath = $spotifydCommand.Source
+        } else {
+            foreach ($dependencyFile in @("spotifyd.exe", "SPOTIFYD-LICENSE")) {
+                if (-not (Test-Path -LiteralPath (Join-Path $unpackedDir $dependencyFile) -PathType Leaf)) {
+                    throw "Release archive is missing bundled $dependencyFile."
+                }
+            }
+            $spotifydPath = $installedSpotifyd
+            $installBundledSpotifyd = $true
+        }
+    }
+
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Copy-Item -Force -LiteralPath (Join-Path $unpackedDir "spotify-tui.exe") -Destination $InstallDir
     Copy-Item -Force -LiteralPath (Join-Path $unpackedDir "spotify-tui-diagnose.exe") -Destination $InstallDir
+
+    if ($installBundledSpotifyd) {
+        Copy-Item -Force -LiteralPath (Join-Path $unpackedDir "spotifyd.exe") -Destination $spotifydPath
+        $shareDir = Join-Path (Split-Path -Parent $InstallDir) "share\spotify-tui"
+        New-Item -ItemType Directory -Force -Path $shareDir | Out-Null
+        Copy-Item -Force -LiteralPath (Join-Path $unpackedDir "SPOTIFYD-LICENSE") -Destination $shareDir
+        Write-Host "Installed the bundled Spotifyd runtime in $InstallDir"
+    } elseif (-not $NoDependencies) {
+        Write-Host "Preserved existing Spotifyd at $spotifydPath"
+    }
+
+    if (-not $NoDependencies) {
+        $configPath = Join-Path $ConfigDir "spotifyd.conf"
+        if (-not (Test-Path -LiteralPath $configPath)) {
+            New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+            $config = @"
+[global]
+volume_controller = "softvol"
+initial_volume = 90
+"@
+            [System.IO.File]::WriteAllText(
+                $configPath,
+                $config + [Environment]::NewLine,
+                [System.Text.UTF8Encoding]::new($false)
+            )
+            Write-Host "Created Spotifyd configuration at $configPath"
+        } else {
+            Write-Host "Preserved existing Spotifyd configuration at $configPath"
+        }
+    }
+
+    if (-not $NoDependencies -and -not $NoService) {
+        $startupDir = if ([string]::IsNullOrWhiteSpace($env:SPOTIFY_TUI_WINDOWS_STARTUP_DIR)) {
+            [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
+        } else {
+            $env:SPOTIFY_TUI_WINDOWS_STARTUP_DIR
+        }
+        if ([string]::IsNullOrWhiteSpace($startupDir)) {
+            Write-Warning "Could not determine the user Startup directory; run spotifyd.exe manually."
+        } else {
+            New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
+            $startupPath = Join-Path $startupDir "spotifyd.cmd"
+            if (-not (Test-Path -LiteralPath $startupPath)) {
+                $escapedSpotifydPath = $spotifydPath.Replace("%", "%%")
+                $escapedConfigPath = $configPath.Replace("%", "%%")
+                [System.IO.File]::WriteAllText(
+                    $startupPath,
+                    "@start `"`" `"$escapedSpotifydPath`" --config-path `"$escapedConfigPath`"" + [Environment]::NewLine,
+                    [System.Text.UTF8Encoding]::new($false)
+                )
+                Write-Host "Created Spotifyd user startup entry at $startupPath"
+            } else {
+                Write-Host "Preserved existing Spotifyd user startup entry at $startupPath"
+            }
+        }
+    }
 
     if (-not $NoModifyPath) {
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -116,8 +210,8 @@ try {
     }
 
     Write-Host "Installed spotify-tui and spotify-tui-diagnose in $InstallDir"
-    if (-not (Get-Command "spotifyd.exe" -ErrorAction SilentlyContinue)) {
-        Write-Warning "spotifyd.exe was not found on PATH; install it before authenticating or playing music."
+    if ($NoDependencies) {
+        Write-Warning "Dependency installation was skipped; ensure a compatible spotifyd.exe is on PATH."
     }
 } finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath $temporaryDir

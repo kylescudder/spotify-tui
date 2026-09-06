@@ -10,3 +10,6 @@ uses semantic versioning once public releases begin.
 - TOML configuration with built-in and custom colour themes.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,
   direct POSIX and PowerShell installers, checksums, and build provenance.
+- Self-contained direct archives with a pinned Spotifyd runtime, verified
+  corresponding source and licence, safe config defaults, and user-level
+  startup integration.

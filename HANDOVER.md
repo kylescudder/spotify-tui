@@ -155,8 +155,14 @@ The release infrastructure is implemented in this repository:
 - `scripts/install.sh` provides the HTTPS-only `curl | sh` path for Linux/macOS;
   `scripts/install.ps1` provides the PowerShell path for Windows. Both select the
   matching release, support pinned versions and user-writable destinations,
-  verify SHA-256 before replacing binaries, and have install, upgrade, invalid
-  version, and tampered-artifact tests.
+  verify SHA-256 before replacing binaries, preserve existing dependencies and
+  configuration, install a pinned bundled Spotifyd when necessary, and create
+  platform user-startup definitions. Install, upgrade, dependency opt-out,
+  service, invalid-version, and tampered-artifact paths have offline tests.
+- Direct archives include Spotifyd's GPLv3 licence and publish its complete
+  corresponding 0.4.2 source beside the binaries. Linux consumes hash-pinned
+  upstream MPRIS builds; macOS and Windows build the portable Rodio backend from
+  pinned upstream commit `c5b94367014856a8c541dea565cbd332e034fb9e`.
 - `packaging/homebrew/spotify-tui.rb.template` is rendered with the tagged source
   checksum, styled, audited, installed, and tested on macOS. A successful tag
   opens a reviewable formula pull request in `kylescudder/homebrew-tap`; it never
@@ -235,6 +241,9 @@ below pass live acceptance.
      clean macOS Homebrew installation.
    - Repeat them on a clean Windows installation produced by the PowerShell
      installer.
+   - On each direct-install platform, prove the bundled Spotifyd starts from its
+     generated user startup definition, preserves an existing config, and can be
+     omitted explicitly without affecting the Spotify TUI installation.
 
 7. Activate and prove the release infrastructure after the external repositories
    exist.
@@ -278,8 +287,9 @@ remaining implementation:
   Homebrew formula on supported macOS systems; the formula passes style, audit,
   install, and smoke tests against the tagged source checksum.
 - The POSIX and PowerShell installers select the correct release artifact,
-  reject checksum mismatches, install without elevation by default, and pass
-  clean install/upgrade/version smoke tests on every advertised platform.
+  reject checksum mismatches, install Spotifyd plus its licence without
+  elevation by default, preserve existing dependency state, and pass clean
+  install/upgrade/version/service smoke tests on every advertised platform.
 - Formatting, Clippy, all unit/integration tests, and all packaging checks pass at
   the release commit.
 

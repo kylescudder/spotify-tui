@@ -79,8 +79,18 @@ curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
 ```
 
 The installer detects the platform, downloads the matching release archive,
-checks it against `SHA256SUMS`, and installs both binaries to `$HOME/.local/bin`
-without `sudo`. To inspect the script or pin a version:
+checks it against `SHA256SUMS`, and installs Spotify TUI, its diagnostic, and a
+pinned Spotifyd runtime to `$HOME/.local/bin` without `sudo`. An existing
+Spotifyd binary or configuration is preserved. A new Linux installation gets a
+session-MPRIS configuration and an enabled systemd user service; macOS gets a
+user LaunchAgent.
+
+The bundled Linux Spotifyd is dynamically linked to the normal ALSA/PulseAudio,
+D-Bus, OpenSSL, and system runtime libraries. The installer does not invoke a
+system package manager to add those libraries. NixOS users should use the Nix
+flake, which supplies the complete runtime closure.
+
+To inspect the script or pin a version:
 
 ```bash
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
@@ -90,8 +100,17 @@ less install-spotify-tui.sh
 sh install-spotify-tui.sh --version 0.1.0 --install-dir "$HOME/.local/bin"
 ```
 
-The direct installer does not modify the system package manager. It warns when
-`spotifyd` is absent; install Spotifyd separately before authenticating.
+Useful installer controls are:
+
+| Option | Purpose |
+| --- | --- |
+| `--config-dir DIRECTORY` | Override the directory for a newly created `spotifyd.conf`. |
+| `--no-dependencies` | Install only Spotify TUI and its diagnostic. |
+| `--force-dependencies` | Replace an existing local Spotifyd with the bundled pinned build. |
+| `--no-service` | Do not create or enable the systemd user unit or LaunchAgent. |
+
+The direct installer does not invoke or modify Homebrew, Nix, Apt, or another
+system package manager.
 
 ### Direct installer on Windows
 
@@ -102,7 +121,10 @@ irm https://github.com/kylescudder/spotify-tui/releases/latest/download/install.
 ```
 
 The default destination is
-`%LOCALAPPDATA%\Programs\spotify-tui\bin`, which is added to the user PATH.
+`%LOCALAPPDATA%\Programs\spotify-tui\bin`, which is added to the user PATH. The
+release archive contains Spotifyd built from the pinned upstream source with
+the portable Rodio backend. The installer preserves an existing Spotifyd,
+creates a minimal config when needed, and adds a user Startup entry.
 The inspect-first, version-pinned form is:
 
 ```powershell
@@ -113,9 +135,14 @@ Get-Content .\install-spotify-tui.ps1
 .\install-spotify-tui.ps1 -Version 0.1.0 -NoModifyPath
 ```
 
+PowerShell accepts `-ConfigDir`, `-NoDependencies`, `-ForceDependencies`,
+`-NoService`, and `-NoModifyPath` for the equivalent Windows controls.
+
 ### Release verification
 
-Every release includes `SHA256SUMS` and GitHub build-provenance attestations.
+Every release includes `SHA256SUMS`, GitHub build-provenance attestations, the
+Spotifyd GPLv3 licence, and the complete source corresponding to the bundled
+Spotifyd binary.
 After downloading an artifact, verify its checksum and provenance with:
 
 ```bash
@@ -126,16 +153,21 @@ gh attestation verify spotify-tui-x86_64-unknown-linux-musl.tar.gz \
 
 ### Uninstall
 
-Use `nix profile remove`, `brew uninstall spotify-tui`, or remove the two files
-installed by the direct installer:
+Use `nix profile remove`, `brew uninstall spotify-tui`, or remove the files
+installed by the direct installer. Only remove `spotifyd` here if the direct
+installer supplied it rather than preserving an existing installation:
 
 ```bash
 rm "$HOME/.local/bin/spotify-tui" "$HOME/.local/bin/spotify-tui-diagnose"
+rm "$HOME/.local/bin/spotifyd"
 ```
 
-On Windows, remove `spotify-tui.exe` and `spotify-tui-diagnose.exe` from
-`%LOCALAPPDATA%\Programs\spotify-tui\bin`, then remove that directory from the
-user PATH if the installer added it.
+On Windows, remove `spotify-tui.exe`, `spotify-tui-diagnose.exe`, and a
+direct-installer-owned `spotifyd.exe` from
+`%LOCALAPPDATA%\Programs\spotify-tui\bin`; remove the generated `spotifyd.cmd`
+from the user Startup directory and then remove the install directory from the
+user PATH if the installer added it. Configuration and OAuth credentials are
+deliberately retained during uninstall.
 
 ## Development
 

@@ -4,8 +4,12 @@ set -eu
 repository=${SPOTIFY_TUI_REPOSITORY:-"@REPOSITORY@"}
 version=${SPOTIFY_TUI_VERSION:-}
 install_dir=${SPOTIFY_TUI_INSTALL_DIR:-}
+config_dir=${SPOTIFY_TUI_SPOTIFYD_CONFIG_DIR:-}
 release_base=${SPOTIFY_TUI_RELEASE_BASE_URL:-}
 allow_insecure=${SPOTIFY_TUI_ALLOW_INSECURE_FOR_TESTS:-0}
+install_dependencies=1
+force_dependencies=0
+configure_service=1
 
 usage() {
   cat <<'EOF'
@@ -16,11 +20,16 @@ Usage: install.sh [OPTIONS]
 Options:
   --version VERSION       Install a specific semantic version (default: latest)
   --install-dir DIRECTORY Install binaries here (default: $HOME/.local/bin)
+  --config-dir DIRECTORY  Write a new Spotifyd config here when needed
   --repository OWNER/REPO Override the release repository
+  --no-dependencies       Install Spotify TUI without bundled Spotifyd
+  --force-dependencies    Replace an existing Spotifyd with the bundled version
+  --no-service            Do not create user-level Spotifyd startup integration
   -h, --help              Show this help
 
 The same settings can be supplied through SPOTIFY_TUI_VERSION,
-SPOTIFY_TUI_INSTALL_DIR, and SPOTIFY_TUI_REPOSITORY.
+SPOTIFY_TUI_INSTALL_DIR, SPOTIFY_TUI_SPOTIFYD_CONFIG_DIR, and
+SPOTIFY_TUI_REPOSITORY.
 EOF
 }
 
@@ -36,10 +45,27 @@ while [ "$#" -gt 0 ]; do
       install_dir=$2
       shift 2
       ;;
+    --config-dir)
+      [ "$#" -ge 2 ] || { echo "install.sh: --config-dir requires a value" >&2; exit 2; }
+      config_dir=$2
+      shift 2
+      ;;
     --repository)
       [ "$#" -ge 2 ] || { echo "install.sh: --repository requires a value" >&2; exit 2; }
       repository=$2
       shift 2
+      ;;
+    --no-dependencies)
+      install_dependencies=0
+      shift
+      ;;
+    --force-dependencies)
+      force_dependencies=1
+      shift
+      ;;
+    --no-service)
+      configure_service=0
+      shift
       ;;
     -h|--help)
       usage
@@ -52,6 +78,11 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ "$install_dependencies" -eq 0 ] && [ "$force_dependencies" -eq 1 ]; then
+  echo "install.sh: --no-dependencies and --force-dependencies cannot be used together" >&2
+  exit 2
+fi
 
 case "$repository" in
   @REPOSITORY@|""|*/*/*|/*|*/|*[!A-Za-z0-9_.-]*/*|*/*[!A-Za-z0-9_.-]*)
@@ -77,10 +108,20 @@ if [ -z "$install_dir" ]; then
   [ -n "${HOME:-}" ] || { echo "install.sh: HOME is unset; pass --install-dir" >&2; exit 2; }
   install_dir="$HOME/.local/bin"
 fi
+case "$install_dir" in
+  /*) ;;
+  *) install_dir="$(pwd)/$install_dir" ;;
+esac
 
 case "$(uname -s)" in
-  Linux) os=unknown-linux-musl ;;
-  Darwin) os=apple-darwin ;;
+  Linux)
+    os=unknown-linux-musl
+    platform=linux
+    ;;
+  Darwin)
+    os=apple-darwin
+    platform=macos
+    ;;
   *)
     echo "install.sh: unsupported operating system: $(uname -s)" >&2
     exit 1
@@ -98,6 +139,24 @@ esac
 
 target="${architecture}-${os}"
 artifact="spotify-tui-${target}.tar.gz"
+
+if [ "$install_dependencies" -eq 1 ] && [ -z "$config_dir" ]; then
+  [ -n "${HOME:-}" ] || {
+    echo "install.sh: HOME is unset; pass --config-dir or --no-dependencies" >&2
+    exit 2
+  }
+  if [ "$platform" = linux ]; then
+    config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/spotifyd"
+  else
+    config_dir="$HOME/Library/Application Support/spotifyd"
+  fi
+fi
+if [ "$install_dependencies" -eq 1 ]; then
+  case "$config_dir" in
+    /*) ;;
+    *) config_dir="$(pwd)/$config_dir" ;;
+  esac
+fi
 
 if [ -z "$release_base" ]; then
   if [ -n "$version" ]; then
@@ -165,15 +224,174 @@ for binary in spotify-tui spotify-tui-diagnose; do
   }
 done
 
+spotifyd_path=
+install_bundled_spotifyd=0
+if [ "$install_dependencies" -eq 1 ]; then
+  if [ "$force_dependencies" -eq 0 ] && [ -x "$install_dir/spotifyd" ]; then
+    spotifyd_path="$install_dir/spotifyd"
+  elif [ "$force_dependencies" -eq 0 ] && command -v spotifyd >/dev/null 2>&1; then
+    spotifyd_path=$(command -v spotifyd)
+  else
+    [ -f "$temporary_dir/unpacked/spotifyd" ] || {
+      echo "install.sh: release archive is missing bundled spotifyd" >&2
+      exit 1
+    }
+    [ -f "$temporary_dir/unpacked/SPOTIFYD-LICENSE" ] || {
+      echo "install.sh: release archive is missing the Spotifyd licence" >&2
+      exit 1
+    }
+    spotifyd_path="$install_dir/spotifyd"
+    install_bundled_spotifyd=1
+  fi
+fi
+
 mkdir -p "$install_dir"
 install -m 0755 "$temporary_dir/unpacked/spotify-tui" "$install_dir/spotify-tui"
 install -m 0755 "$temporary_dir/unpacked/spotify-tui-diagnose" "$install_dir/spotify-tui-diagnose"
+
+if [ "$install_bundled_spotifyd" -eq 1 ]; then
+  install -m 0755 "$temporary_dir/unpacked/spotifyd" "$spotifyd_path"
+  share_dir=$(dirname "$install_dir")/share/spotify-tui
+  mkdir -p "$share_dir"
+  install -m 0644 "$temporary_dir/unpacked/SPOTIFYD-LICENSE" "$share_dir/SPOTIFYD-LICENSE"
+  echo "Installed the bundled Spotifyd runtime in $install_dir"
+elif [ "$install_dependencies" -eq 1 ]; then
+  echo "Preserved existing Spotifyd at $spotifyd_path"
+fi
+
+if [ "$install_dependencies" -eq 1 ]; then
+  config_path="$config_dir/spotifyd.conf"
+  if [ ! -e "$config_path" ]; then
+    mkdir -p "$config_dir"
+    if [ "$platform" = linux ]; then
+      umask 077
+      cat > "$config_path" <<'EOF'
+[global]
+use_mpris = true
+dbus_type = "session"
+volume_controller = "softvol"
+initial_volume = 90
+EOF
+    else
+      umask 077
+      cat > "$config_path" <<'EOF'
+[global]
+volume_controller = "softvol"
+initial_volume = 90
+EOF
+    fi
+    echo "Created Spotifyd configuration at $config_path"
+  else
+    echo "Preserved existing Spotifyd configuration at $config_path"
+  fi
+fi
+
+escape_systemd_path() {
+  printf '%s' "$1" | sed -e 's/%/%%/g' -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+escape_xml() {
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' \
+    -e "s/'/\&apos;/g"
+}
+
+if [ "$install_dependencies" -eq 1 ] && [ "$configure_service" -eq 1 ]; then
+  if [ "$platform" = linux ]; then
+    systemctl_program=${SPOTIFY_TUI_SYSTEMCTL:-systemctl}
+    systemd_user_dir=${SPOTIFY_TUI_SYSTEMD_USER_DIR:-"${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"}
+    service_path="$systemd_user_dir/spotifyd.service"
+    service_exists=0
+    if command -v "$systemctl_program" >/dev/null 2>&1 \
+      && "$systemctl_program" --user cat spotifyd.service >/dev/null 2>&1; then
+      service_exists=1
+    fi
+    if [ "$service_exists" -eq 0 ] && [ ! -e "$service_path" ]; then
+      escaped_spotifyd_path=$(escape_systemd_path "$spotifyd_path")
+      escaped_config_path=$(escape_systemd_path "$config_path")
+      mkdir -p "$systemd_user_dir"
+      cat > "$service_path" <<EOF
+[Unit]
+Description=Spotifyd for Spotify TUI
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+ExecStart="$escaped_spotifyd_path" --config-path "$escaped_config_path" --no-daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+      echo "Created Spotifyd user service at $service_path"
+    fi
+    if command -v "$systemctl_program" >/dev/null 2>&1; then
+      if "$systemctl_program" --user daemon-reload >/dev/null 2>&1 \
+        && "$systemctl_program" --user enable spotifyd.service >/dev/null 2>&1; then
+        echo "Enabled spotifyd.service; spotify-tui auth will start or restart it."
+      else
+        echo "Could not enable spotifyd.service in this session; enable it later with:"
+        echo "  $systemctl_program --user enable spotifyd.service"
+      fi
+    else
+      echo "systemctl was not found; run Spotifyd manually with: $spotifyd_path --no-daemon"
+    fi
+  else
+    launchctl_program=${SPOTIFY_TUI_LAUNCHCTL:-launchctl}
+    launch_agents_dir=${SPOTIFY_TUI_LAUNCH_AGENTS_DIR:-"$HOME/Library/LaunchAgents"}
+    service_path="$launch_agents_dir/io.github.kylescudder.spotifyd.plist"
+    service_label=io.github.kylescudder.spotifyd
+    if [ ! -e "$service_path" ]; then
+      escaped_spotifyd_path=$(escape_xml "$spotifyd_path")
+      escaped_config_path=$(escape_xml "$config_path")
+      mkdir -p "$launch_agents_dir"
+      cat > "$service_path" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$service_label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$escaped_spotifyd_path</string>
+    <string>--config-path</string>
+    <string>$escaped_config_path</string>
+    <string>--no-daemon</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+EOF
+      echo "Created Spotifyd launch agent at $service_path"
+    fi
+    if command -v "$launchctl_program" >/dev/null 2>&1; then
+      launch_domain="gui/$(id -u)"
+      if "$launchctl_program" print "$launch_domain/$service_label" >/dev/null 2>&1; then
+        "$launchctl_program" kickstart -k "$launch_domain/$service_label" >/dev/null 2>&1 \
+          || echo "Could not restart the Spotifyd launch agent in this session."
+      else
+        "$launchctl_program" bootstrap "$launch_domain" "$service_path" >/dev/null 2>&1 \
+          || echo "Could not start the Spotifyd launch agent in this session."
+      fi
+    else
+      echo "launchctl was not found; run Spotifyd manually with: $spotifyd_path --no-daemon"
+    fi
+  fi
+fi
 
 echo "Installed spotify-tui and spotify-tui-diagnose in $install_dir"
 case ":${PATH}:" in
   *:"$install_dir":*) ;;
   *) echo "Add $install_dir to PATH before running spotify-tui." ;;
 esac
-if ! command -v spotifyd >/dev/null 2>&1; then
-  echo "spotifyd was not found on PATH; install it before authenticating or playing music."
+if [ "$install_dependencies" -eq 0 ]; then
+  echo "Dependency installation was skipped; ensure a compatible spotifyd is on PATH."
 fi
