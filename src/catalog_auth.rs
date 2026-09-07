@@ -22,12 +22,16 @@ const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPIRY_MARGIN: Duration = Duration::from_secs(30);
+const AUTHORIZATION_SCOPES: &str = "user-modify-playback-state";
+const AUTHORIZATION_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredToken {
     access_token: String,
     refresh_token: String,
     expires_at: u64,
+    #[serde(default)]
+    authorization_version: u32,
 }
 
 impl StoredToken {
@@ -110,7 +114,12 @@ pub(crate) fn load_token(config: &SpotifyApiConfig) -> Result<StoredToken, Catal
             }
         }
     })?;
-    serde_json::from_slice(&bytes).map_err(|source| CatalogAuthError::ParseToken { path, source })
+    let token: StoredToken = serde_json::from_slice(&bytes)
+        .map_err(|source| CatalogAuthError::ParseToken { path, source })?;
+    if token.authorization_version < AUTHORIZATION_VERSION {
+        return Err(CatalogAuthError::AuthorizationExpired);
+    }
+    Ok(token)
 }
 
 pub(crate) fn refresh_token(
@@ -139,6 +148,7 @@ pub(crate) fn refresh_token(
             .refresh_token
             .unwrap_or_else(|| current.refresh_token.clone()),
         expires_at: unix_timestamp().saturating_add(response.expires_in),
+        authorization_version: current.authorization_version,
     };
     save_token(&token_cache_path(config)?, &token)?;
     Ok(token)
@@ -158,6 +168,7 @@ fn authorization_request(
         .append_pair("redirect_uri", redirect.as_str())
         .append_pair("code_challenge_method", "S256")
         .append_pair("code_challenge", &challenge)
+        .append_pair("scope", AUTHORIZATION_SCOPES)
         .append_pair("state", &state);
     Ok(AuthorizationRequest {
         url,
@@ -313,6 +324,7 @@ fn exchange_code(
         access_token: response.access_token,
         refresh_token,
         expires_at: unix_timestamp().saturating_add(response.expires_in),
+        authorization_version: AUTHORIZATION_VERSION,
     })
 }
 
@@ -551,6 +563,10 @@ redirect_uri = "http://127.0.0.1:8989/callback"
             Some("S256")
         );
         assert!(parameters.contains_key("code_challenge"));
+        assert_eq!(
+            parameters.get("scope").map(|value| value.as_ref()),
+            Some("user-modify-playback-state")
+        );
         assert!(!parameters.contains_key("client_secret"));
         assert!(request.verifier.len() >= 43);
     }
@@ -631,6 +647,7 @@ redirect_uri = "http://127.0.0.1:8989/callback"
             access_token: "access".to_owned(),
             refresh_token: "refresh".to_owned(),
             expires_at: 1,
+            authorization_version: AUTHORIZATION_VERSION,
         };
 
         save_token(&path, &token).expect("token cache should be written");

@@ -163,17 +163,23 @@ fn decode_artwork(bytes: Vec<u8>) -> Result<DynamicImage, ArtworkError> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ArtworkEvent {
     Loaded {
-        track_revision: u64,
+        target: ArtworkTarget,
         artwork: Artwork,
     },
     Failed {
-        track_revision: u64,
+        target: ArtworkTarget,
         message: String,
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtworkTarget {
+    Playback(u64),
+    Catalog(u64),
+}
+
 enum ArtworkRequest {
-    Load { track_revision: u64, url: String },
+    Load { target: ArtworkTarget, url: String },
     Shutdown,
 }
 
@@ -207,12 +213,12 @@ impl ArtworkRuntime {
 
     pub fn load(
         &self,
-        track_revision: u64,
+        target: ArtworkTarget,
         url: impl Into<String>,
     ) -> Result<(), ArtworkRuntimeError> {
         self.request_tx
             .send(ArtworkRequest::Load {
-                track_revision,
+                target,
                 url: url.into(),
             })
             .map_err(|_| ArtworkRuntimeError)
@@ -230,43 +236,58 @@ fn run_worker<S: ArtworkSource>(
 ) {
     let mut cache = LruCache::new(NonZeroUsize::new(CACHE_ENTRIES).expect("cache is non-empty"));
 
-    while let Ok(mut request) = request_rx.recv() {
+    while let Ok(request) = request_rx.recv() {
+        let mut pending = Vec::with_capacity(2);
+        if !queue_latest_by_target(&mut pending, request) {
+            return;
+        }
         while let Ok(newer) = request_rx.try_recv() {
-            request = newer;
+            if !queue_latest_by_target(&mut pending, newer) {
+                return;
+            }
         }
 
-        let ArtworkRequest::Load {
-            track_revision,
-            url,
-        } = request
-        else {
-            return;
-        };
-
-        let result = cache.get(&url).cloned().map_or_else(
-            || {
-                source.fetch(&url).map(|image| {
-                    let artwork = Artwork::new(url.clone(), image);
-                    cache.put(url.clone(), artwork.clone());
-                    artwork
-                })
-            },
-            Ok,
-        );
-        let event = match result {
-            Ok(artwork) => ArtworkEvent::Loaded {
-                track_revision,
-                artwork,
-            },
-            Err(error) => ArtworkEvent::Failed {
-                track_revision,
-                message: error.to_string(),
-            },
-        };
-        if event_tx.send(event).is_err() {
-            return;
+        for (target, url) in pending {
+            let result = cache.get(&url).cloned().map_or_else(
+                || {
+                    source.fetch(&url).map(|image| {
+                        let artwork = Artwork::new(url.clone(), image);
+                        cache.put(url.clone(), artwork.clone());
+                        artwork
+                    })
+                },
+                Ok,
+            );
+            let event = match result {
+                Ok(artwork) => ArtworkEvent::Loaded { target, artwork },
+                Err(error) => ArtworkEvent::Failed {
+                    target,
+                    message: error.to_string(),
+                },
+            };
+            if event_tx.send(event).is_err() {
+                return;
+            }
         }
     }
+}
+
+fn queue_latest_by_target(
+    pending: &mut Vec<(ArtworkTarget, String)>,
+    request: ArtworkRequest,
+) -> bool {
+    let ArtworkRequest::Load { target, url } = request else {
+        return false;
+    };
+    pending.retain(|(queued, _)| {
+        !matches!(
+            (queued, target),
+            (ArtworkTarget::Playback(_), ArtworkTarget::Playback(_))
+                | (ArtworkTarget::Catalog(_), ArtworkTarget::Catalog(_))
+        )
+    });
+    pending.push((target, url));
+    true
 }
 
 impl Drop for ArtworkRuntime {
@@ -446,27 +467,67 @@ mod tests {
         .expect("artwork runtime should start");
 
         runtime
-            .load(1, "https://example.com/art.jpg")
+            .load(ArtworkTarget::Playback(1), "https://example.com/art.jpg")
             .expect("first artwork request should be accepted");
         assert!(matches!(
             receive_event(&runtime),
             ArtworkEvent::Loaded {
-                track_revision: 1,
+                target: ArtworkTarget::Playback(1),
                 ..
             }
         ));
 
         runtime
-            .load(2, "https://example.com/art.jpg")
+            .load(ArtworkTarget::Catalog(2), "https://example.com/art.jpg")
             .expect("second artwork request should be accepted");
         assert!(matches!(
             receive_event(&runtime),
             ArtworkEvent::Loaded {
-                track_revision: 2,
+                target: ArtworkTarget::Catalog(2),
                 ..
             }
         ));
         assert_eq!(fetches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn pending_requests_keep_the_latest_playback_and_catalogue_images() {
+        let mut pending = Vec::new();
+        assert!(queue_latest_by_target(
+            &mut pending,
+            ArtworkRequest::Load {
+                target: ArtworkTarget::Playback(1),
+                url: "https://example.com/old-playback.jpg".to_owned(),
+            },
+        ));
+        assert!(queue_latest_by_target(
+            &mut pending,
+            ArtworkRequest::Load {
+                target: ArtworkTarget::Catalog(1),
+                url: "https://example.com/catalog.jpg".to_owned(),
+            },
+        ));
+        assert!(queue_latest_by_target(
+            &mut pending,
+            ArtworkRequest::Load {
+                target: ArtworkTarget::Playback(2),
+                url: "https://example.com/current-playback.jpg".to_owned(),
+            },
+        ));
+
+        assert_eq!(
+            pending,
+            vec![
+                (
+                    ArtworkTarget::Catalog(1),
+                    "https://example.com/catalog.jpg".to_owned(),
+                ),
+                (
+                    ArtworkTarget::Playback(2),
+                    "https://example.com/current-playback.jpg".to_owned(),
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -41,7 +41,14 @@ pub fn render(
     frame.render_widget(block, area);
 
     if !matches!(state.browser().view(), BrowserView::Closed) {
-        render_browser(frame, inner, state.browser().view(), theme);
+        render_browser(
+            frame,
+            inner,
+            state.browser().view(),
+            state.catalog_artwork(),
+            theme,
+            artwork_renderer,
+        );
         return;
     }
 
@@ -220,7 +227,14 @@ fn render_playback(
     );
 }
 
-fn render_browser(frame: &mut Frame, area: Rect, view: &BrowserView, theme: &Theme) {
+fn render_browser(
+    frame: &mut Frame,
+    area: Rect,
+    view: &BrowserView,
+    artwork: &ArtworkState,
+    theme: &Theme,
+    artwork_renderer: &mut ArtworkRenderer,
+) {
     match view {
         BrowserView::Closed => {}
         BrowserView::Editing { query } => render_search_editor(frame, area, query, theme),
@@ -264,12 +278,21 @@ fn render_browser(frame: &mut Frame, area: Rect, view: &BrowserView, theme: &The
             ]);
             frame.render_widget(Paragraph::new(heading).wrap(Wrap { trim: true }), layout[0]);
 
+            let list_area = catalog_list_area(
+                frame,
+                layout[1],
+                page.artwork_url(*selected).is_some(),
+                artwork,
+                theme,
+                artwork_renderer,
+            );
+
             if page.items().is_empty() {
                 frame.render_widget(
                     Paragraph::new("No results")
                         .style(Style::default().fg(theme.muted()))
                         .alignment(Alignment::Center),
-                    layout[1],
+                    list_area,
                 );
             } else {
                 let items = page.items().iter().map(|item| {
@@ -301,7 +324,7 @@ fn render_browser(frame: &mut Frame, area: Rect, view: &BrowserView, theme: &The
                         .add_modifier(Modifier::BOLD),
                 );
                 let mut list_state = ListState::default().with_selected(Some(*selected));
-                frame.render_stateful_widget(list, layout[1], &mut list_state);
+                frame.render_stateful_widget(list, list_area, &mut list_state);
             }
 
             let help = if area.width >= 70 {
@@ -317,6 +340,49 @@ fn render_browser(frame: &mut Frame, area: Rect, view: &BrowserView, theme: &The
             );
         }
     }
+}
+
+fn catalog_list_area(
+    frame: &mut Frame,
+    area: Rect,
+    has_artwork: bool,
+    artwork: &ArtworkState,
+    theme: &Theme,
+    artwork_renderer: &mut ArtworkRenderer,
+) -> Rect {
+    const MIN_LIST_WIDTH: u16 = 52;
+    const MAX_ARTWORK_HEIGHT: u16 = 22;
+    const GAP: u16 = 2;
+
+    if !has_artwork || area.height < 12 || area.width < 88 {
+        return area;
+    }
+
+    let artwork_height = area
+        .height
+        .min(MAX_ARTWORK_HEIGHT)
+        .min(area.width.saturating_sub(MIN_LIST_WIDTH + GAP) / 2);
+    let artwork_width = artwork_height.saturating_mul(2);
+    if artwork_width == 0 {
+        return area;
+    }
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(artwork_width),
+            Constraint::Length(GAP),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+    let artwork_area = Rect::new(
+        columns[0].x,
+        columns[0].y + columns[0].height.saturating_sub(artwork_height) / 2,
+        artwork_width,
+        artwork_height,
+    );
+    render_artwork(frame, artwork_area, artwork, theme, artwork_renderer);
+    columns[2]
 }
 
 fn render_search_editor(frame: &mut Frame, area: Rect, query: &str, theme: &Theme) {
@@ -936,7 +1002,7 @@ background = "#010203"
                         "spotify:artist:artist",
                         "Enter Shikari",
                         "Artist",
-                        None,
+                        Some("https://example.com/enter-shikari.jpg".to_owned()),
                     ),
                     CatalogItem::new(
                         CatalogItemKind::Track,
@@ -949,6 +1015,7 @@ background = "#010203"
                 ],
             },
         });
+        state.sync_catalog_artwork(Some("https://example.com/enter-shikari.jpg"));
         let theme = Config::default();
         let mut artwork_renderer =
             ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
@@ -967,8 +1034,16 @@ background = "#010203"
             "[Track]",
             "Sorry You're Not a Winner",
             "Enter open/play",
+            "Loading artwork…",
         ] {
             assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
         }
+
+        let mut narrow_terminal =
+            Terminal::new(TestBackend::new(70, 20)).expect("test backend is infallible");
+        narrow_terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+        assert!(!rendered_text(&narrow_terminal).contains("Loading artwork…"));
     }
 }

@@ -15,7 +15,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use spotify_tui::{
     app::{AppEvent, AppState, Command},
-    artwork::{ArtworkEvent, ArtworkRenderer, ArtworkRuntime},
+    artwork::{ArtworkEvent, ArtworkRenderer, ArtworkRuntime, ArtworkTarget},
     auth::{self, AuthOutcome},
     browser::{BrowserEffect, BrowserMode},
     catalog::{CatalogEvent, CatalogRuntime},
@@ -213,7 +213,12 @@ fn run(
         drain_playback_events(app, playback, artwork);
         drain_artwork_events(app, artwork);
         drain_catalog_events(app, catalog);
-        artwork_renderer.sync(app.track_revision(), app.artwork());
+        sync_catalog_artwork(app, artwork);
+        if app.browser().mode() == BrowserMode::Closed {
+            artwork_renderer.sync(app.track_revision(), app.artwork());
+        } else {
+            artwork_renderer.sync(app.catalog_revision(), app.catalog_artwork());
+        }
         terminal.draw(|frame| ui::render(frame, app, theme, artwork_renderer))?;
 
         if event::poll(Duration::from_millis(250))?
@@ -230,6 +235,19 @@ fn run(
                     }
                     BrowserEffect::Play(uri) => {
                         dispatch(app, playback, PlaybackCommand::OpenUri(uri));
+                    }
+                    BrowserEffect::PlayTrack(target) => {
+                        if let Some(catalog) = catalog {
+                            if let Err(error) = catalog.play(target) {
+                                app.reduce(AppEvent::PlaybackFailed(error.to_string()));
+                            }
+                        } else {
+                            dispatch(
+                                app,
+                                playback,
+                                PlaybackCommand::OpenUri(target.uri().to_owned()),
+                            );
+                        }
                     }
                     BrowserEffect::Fetch {
                         request_id,
@@ -311,7 +329,8 @@ fn drain_playback_events(app: &mut AppState, playback: &PlaybackRuntime, artwork
                 });
                 if app.track_revision() != previous_revision
                     && let Some(url) = art_url
-                    && let Err(error) = artwork.load(app.track_revision(), url)
+                    && let Err(error) =
+                        artwork.load(ArtworkTarget::Playback(app.track_revision()), url)
                 {
                     app.reduce(AppEvent::ArtworkFailed {
                         track_revision: app.track_revision(),
@@ -329,19 +348,45 @@ fn drain_artwork_events(app: &mut AppState, artwork: &ArtworkRuntime) {
     while let Some(event) = artwork.try_event() {
         app.reduce(match event {
             ArtworkEvent::Loaded {
-                track_revision,
+                target: ArtworkTarget::Playback(track_revision),
                 artwork,
             } => AppEvent::ArtworkLoaded {
                 track_revision,
                 artwork,
             },
             ArtworkEvent::Failed {
-                track_revision,
+                target: ArtworkTarget::Playback(track_revision),
                 message,
             } => AppEvent::ArtworkFailed {
                 track_revision,
                 message,
             },
+            ArtworkEvent::Loaded {
+                target: ArtworkTarget::Catalog(catalog_revision),
+                artwork,
+            } => AppEvent::CatalogArtworkLoaded {
+                catalog_revision,
+                artwork,
+            },
+            ArtworkEvent::Failed {
+                target: ArtworkTarget::Catalog(catalog_revision),
+                message,
+            } => AppEvent::CatalogArtworkFailed {
+                catalog_revision,
+                message,
+            },
+        });
+    }
+}
+
+fn sync_catalog_artwork(app: &mut AppState, artwork: &ArtworkRuntime) {
+    let url = app.browser().artwork_url().map(str::to_owned);
+    if let Some((catalog_revision, url)) = app.sync_catalog_artwork(url.as_deref())
+        && let Err(error) = artwork.load(ArtworkTarget::Catalog(catalog_revision), url)
+    {
+        app.reduce(AppEvent::CatalogArtworkFailed {
+            catalog_revision,
+            message: error.to_string(),
         });
     }
 }
@@ -351,7 +396,14 @@ fn drain_catalog_events(app: &mut AppState, catalog: Option<&CatalogRuntime>) {
         return;
     };
     while let Some(event) = catalog.try_event() {
-        app.browser_mut().resolve(event);
+        match event {
+            CatalogEvent::PlaybackFailed { message } => {
+                app.reduce(AppEvent::PlaybackFailed(message));
+            }
+            event @ (CatalogEvent::Loaded { .. } | CatalogEvent::Failed { .. }) => {
+                app.browser_mut().resolve(event);
+            }
+        }
     }
 }
 

@@ -197,6 +197,11 @@ graphics support when detected. Other terminals fall back automatically to
 Unicode half blocks, while missing or invalid artwork displays a text
 placeholder.
 
+Search results and artist and album pages reuse that same bounded artwork
+pipeline with image URLs returned by the Spotify Web API. Wide catalogue views
+show a borderless image beside the list; narrow views devote the full width to
+navigation instead.
+
 ### Playback controls
 
 | Key | Action |
@@ -298,8 +303,11 @@ that has no resumable context.
 - `/` starts a new search and `q` quits.
 
 An artist page shows the artist's album and single releases. Opening a release
-shows its tracks; selecting a track sends its Spotify URI through the same local
-Spotifyd playback path as the now-playing controls.
+shows its tracks. Selecting a track asks Spotify to start that exact URI on the
+active Spotifyd device, retaining its album as the playback context. This
+avoids an off-by-one bug in Spotifyd 0.4.2's MPRIS `OpenUri` implementation;
+play/pause, previous/next, seeking, volume, and all now-playing state remain on
+the local MPRIS connection.
 
 Spotify does not provide a distributable, zero-configuration Web API client for
 this use case. Each installation therefore needs a Spotify developer app client
@@ -329,7 +337,10 @@ ID. No client secret is used or stored.
 The first search automatically opens Spotify's browser approval page. The TUI
 keeps running while Authorization Code with PKCE completes over the loopback
 redirect, then continues the original search without another command or
-restart. It stores the resulting Web API access and refresh token at
+restart. Approval includes permission to control playback so catalogue track
+selection can target the active Spotifyd device. Tokens created by an older
+build prompt for this additional permission once on the next search. The TUI
+stores the resulting Web API access and refresh token at
 `$XDG_STATE_HOME/spotify-tui/spotify-api-token.json`, or
 `$HOME/.local/state/spotify-tui/spotify-api-token.json` when
 `XDG_STATE_HOME` is unset. The cache is created with owner-only permissions on

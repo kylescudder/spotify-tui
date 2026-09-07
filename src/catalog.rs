@@ -52,6 +52,7 @@ pub struct CatalogItem {
     name: String,
     detail: String,
     image_url: Option<String>,
+    playback_context_uri: Option<String>,
 }
 
 impl CatalogItem {
@@ -70,7 +71,13 @@ impl CatalogItem {
             name: name.into(),
             detail: detail.into(),
             image_url,
+            playback_context_uri: None,
         }
+    }
+
+    fn with_playback_context(mut self, context_uri: impl Into<String>) -> Self {
+        self.playback_context_uri = Some(context_uri.into());
+        self
     }
 
     pub const fn kind(&self) -> CatalogItemKind {
@@ -95,6 +102,29 @@ impl CatalogItem {
 
     pub fn image_url(&self) -> Option<&str> {
         self.image_url.as_deref()
+    }
+
+    pub fn playback(&self) -> CatalogPlayback {
+        CatalogPlayback {
+            uri: self.uri.clone(),
+            context_uri: self.playback_context_uri.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogPlayback {
+    uri: String,
+    context_uri: Option<String>,
+}
+
+impl CatalogPlayback {
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    pub fn context_uri(&self) -> Option<&str> {
+        self.context_uri.as_deref()
     }
 }
 
@@ -140,6 +170,14 @@ impl CatalogPage {
             Self::Album { tracks, .. } => tracks,
         }
     }
+
+    pub fn artwork_url(&self, selected: usize) -> Option<&str> {
+        match self {
+            Self::Search { items, .. } => items.get(selected).and_then(CatalogItem::image_url),
+            Self::Artist { artist, .. } => artist.image_url(),
+            Self::Album { album, .. } => album.image_url(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +189,12 @@ pub enum CatalogRequest {
 
 pub trait CatalogSource {
     fn fetch(&mut self, request: &CatalogRequest) -> Result<CatalogPage, CatalogError>;
+
+    fn play(&mut self, _playback: &CatalogPlayback) -> Result<(), CatalogError> {
+        Err(CatalogError::Unavailable(
+            "catalogue playback is unavailable".to_owned(),
+        ))
+    }
 }
 
 struct SpotifyCatalogSource {
@@ -220,12 +264,36 @@ impl SpotifyCatalogSource {
         let album = album
             .into_item()
             .ok_or_else(|| CatalogError::InvalidResponse("album has no playable URI".to_owned()))?;
+        let album_context = (album.name().to_owned(), album.uri().to_owned());
         let tracks = tracks
             .items
             .into_iter()
-            .filter_map(|track| track.into_item(None))
+            .filter_map(|track| track.into_item(Some(&album_context)))
             .collect();
         Ok(CatalogPage::Album { album, tracks })
+    }
+
+    fn play(&mut self, playback: &CatalogPlayback) -> Result<(), CatalogError> {
+        if self.token.needs_refresh() {
+            self.refresh_or_authenticate()?;
+        }
+
+        match request_playback(&self.agent, playback, self.token.access_token()) {
+            Err(ureq::Error::StatusCode(401)) => {
+                self.refresh_or_authenticate()?;
+                request_playback(&self.agent, playback, self.token.access_token())
+                    .map_err(CatalogError::from_http)?;
+            }
+            Err(ureq::Error::StatusCode(403)) => {
+                self.authenticate()?;
+                request_playback(&self.agent, playback, self.token.access_token())
+                    .map_err(CatalogError::from_http)?;
+            }
+            result => {
+                result.map_err(CatalogError::from_http)?;
+            }
+        }
+        Ok(())
     }
 
     fn get_json<T: DeserializeOwned>(&mut self, url: Url) -> Result<T, CatalogError> {
@@ -254,6 +322,12 @@ impl SpotifyCatalogSource {
         };
         Ok(())
     }
+
+    fn authenticate(&mut self) -> Result<(), CatalogError> {
+        authenticate_from_tui(&self.config, &self.cancelled)?;
+        self.token = load_token(&self.config)?;
+        Ok(())
+    }
 }
 
 impl CatalogSource for SpotifyCatalogSource {
@@ -263,6 +337,10 @@ impl CatalogSource for SpotifyCatalogSource {
             CatalogRequest::Artist(id) => self.artist(id),
             CatalogRequest::Album(id) => self.album(id),
         }
+    }
+
+    fn play(&mut self, playback: &CatalogPlayback) -> Result<(), CatalogError> {
+        SpotifyCatalogSource::play(self, playback)
     }
 }
 
@@ -279,6 +357,33 @@ fn request_json<T: DeserializeOwned>(
     response.body_mut().read_json()
 }
 
+fn request_playback(
+    agent: &ureq::Agent,
+    playback: &CatalogPlayback,
+    access_token: &str,
+) -> Result<(), ureq::Error> {
+    let authorization = format!("Bearer {access_token}");
+    let body = playback_body(playback);
+    agent
+        .put("https://api.spotify.com/v1/me/player/play")
+        .header("Authorization", authorization)
+        .send_json(&body)?;
+    Ok(())
+}
+
+fn playback_body(playback: &CatalogPlayback) -> serde_json::Value {
+    playback.context_uri().map_or_else(
+        || serde_json::json!({ "uris": [playback.uri()] }),
+        |context_uri| {
+            serde_json::json!({
+                "context_uri": context_uri,
+                "offset": { "uri": playback.uri() },
+                "position_ms": 0
+            })
+        },
+    )
+}
+
 fn api_url(path: &str) -> Result<Url, CatalogError> {
     Url::parse(API_BASE_URL)
         .expect("Spotify API base URL is valid")
@@ -290,6 +395,7 @@ fn api_url(path: &str) -> Result<Url, CatalogError> {
 pub enum CatalogEvent {
     Loaded { request_id: u64, page: CatalogPage },
     Failed { request_id: u64, message: String },
+    PlaybackFailed { message: String },
 }
 
 enum RuntimeRequest {
@@ -297,6 +403,7 @@ enum RuntimeRequest {
         request_id: u64,
         request: CatalogRequest,
     },
+    Play(CatalogPlayback),
     Shutdown,
 }
 
@@ -376,6 +483,12 @@ impl CatalogRuntime {
     pub fn try_event(&self) -> Option<CatalogEvent> {
         self.event_rx.try_recv().ok()
     }
+
+    pub fn play(&self, playback: CatalogPlayback) -> Result<(), CatalogRuntimeError> {
+        self.request_tx
+            .send(RuntimeRequest::Play(playback))
+            .map_err(|_| CatalogRuntimeError)
+    }
 }
 
 fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
@@ -388,12 +501,32 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
         while let Ok(newer) = request_rx.try_recv() {
             runtime_request = newer;
         }
-        let RuntimeRequest::Fetch {
-            request_id,
-            request,
-        } = runtime_request
-        else {
-            return;
+        let (request_id, request) = match runtime_request {
+            RuntimeRequest::Fetch {
+                request_id,
+                request,
+            } => (request_id, request),
+            RuntimeRequest::Play(playback) => {
+                let result = source.as_mut().map_or_else(
+                    || {
+                        Err(CatalogError::Unavailable(
+                            "catalogue is not ready".to_owned(),
+                        ))
+                    },
+                    |source| source.play(&playback),
+                );
+                if let Err(error) = result
+                    && event_tx
+                        .send(CatalogEvent::PlaybackFailed {
+                            message: error.to_string(),
+                        })
+                        .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
+            RuntimeRequest::Shutdown => return,
         };
         let result = match source.as_mut() {
             Some(source) => source.fetch(&request),
@@ -544,35 +677,55 @@ struct TrackWire {
     duration_ms: Option<u64>,
     #[serde(default)]
     artists: Vec<NamedWire>,
-    album: Option<NamedWire>,
+    album: Option<TrackAlbumWire>,
 }
 
 impl TrackWire {
-    fn into_item(self, fallback_album: Option<&str>) -> Option<CatalogItem> {
+    fn into_item(self, fallback_album: Option<&(String, String)>) -> Option<CatalogItem> {
         let mut details = Vec::new();
         let artists = names(&self.artists);
         if !artists.is_empty() {
             details.push(artists);
         }
-        if let Some(album) = self
-            .album
-            .and_then(|album| album.name)
-            .or_else(|| fallback_album.map(str::to_owned))
-        {
-            details.push(album);
+        let (album_name, context_uri, image_url) = match self.album {
+            Some(album) => (
+                album.name,
+                album.uri,
+                album.images.into_iter().next().map(|image| image.url),
+            ),
+            None => (
+                fallback_album.map(|(name, _)| name.clone()),
+                fallback_album.map(|(_, uri)| uri.clone()),
+                None,
+            ),
+        };
+        if let Some(album_name) = album_name {
+            details.push(album_name);
         }
         if let Some(duration) = self.duration_ms {
             details.push(format_duration_ms(duration));
         }
-        Some(CatalogItem::new(
+        let item = CatalogItem::new(
             CatalogItemKind::Track,
             self.id?,
             self.uri?,
             self.name?,
             details.join(" • "),
-            None,
-        ))
+            image_url,
+        );
+        Some(match context_uri {
+            Some(uri) => item.with_playback_context(uri),
+            None => item,
+        })
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct TrackAlbumWire {
+    name: Option<String>,
+    uri: Option<String>,
+    #[serde(default)]
+    images: Vec<ImageWire>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -670,7 +823,7 @@ mod tests {
             r#"{
                 "artists": {"items": [{"id":"artist-1","uri":"spotify:artist:artist-1","name":"Enter Shikari","images":[]}]},
                 "albums": {"items": [{"id":"album-1","uri":"spotify:album:album-1","name":"A Kiss for the Whole World","release_date":"2023-04-21","artists":[{"name":"Enter Shikari"}],"images":[]}]},
-                "tracks": {"items": [{"id":"track-1","uri":"spotify:track:track-1","name":"Sorry You're Not a Winner","duration_ms":228000,"artists":[{"name":"Enter Shikari"}],"album":{"name":"Take to the Skies"}}]},
+                "tracks": {"items": [{"id":"track-1","uri":"spotify:track:track-1","name":"Sorry You're Not a Winner","duration_ms":228000,"artists":[{"name":"Enter Shikari"}],"album":{"name":"Take to the Skies","uri":"spotify:album:album-2","images":[{"url":"https://example.com/take-to-the-skies.jpg"}]}}]},
                 "playlists": {"items": [null]}
             }"#,
         )
@@ -682,6 +835,37 @@ mod tests {
         assert_eq!(page.items()[1].kind(), CatalogItemKind::Album);
         assert_eq!(page.items()[2].uri(), "spotify:track:track-1");
         assert!(page.items()[2].detail().contains("3:48"));
+        assert_eq!(
+            page.items()[2].image_url(),
+            Some("https://example.com/take-to-the-skies.jpg")
+        );
+        assert_eq!(
+            page.items()[2].playback().context_uri(),
+            Some("spotify:album:album-2")
+        );
+    }
+
+    #[test]
+    fn album_track_playback_uses_the_exact_track_as_a_zero_free_uri_offset() {
+        let playback = CatalogItem::new(
+            CatalogItemKind::Track,
+            "track-2",
+            "spotify:track:track-2",
+            "Second track",
+            "Artist • Album • 3:20",
+            None,
+        )
+        .with_playback_context("spotify:album:album-1")
+        .playback();
+
+        assert_eq!(
+            playback_body(&playback),
+            serde_json::json!({
+                "context_uri": "spotify:album:album-1",
+                "offset": { "uri": "spotify:track:track-2" },
+                "position_ms": 0
+            })
+        );
     }
 
     struct FakeSource;
@@ -697,6 +881,30 @@ mod tests {
                 query: query.clone(),
                 items: Vec::new(),
             })
+        }
+    }
+
+    struct RecordingSource {
+        plays: mpsc::Sender<CatalogPlayback>,
+    }
+
+    impl CatalogSource for RecordingSource {
+        fn fetch(&mut self, request: &CatalogRequest) -> Result<CatalogPage, CatalogError> {
+            let CatalogRequest::Search(query) = request else {
+                return Err(CatalogError::InvalidRequest(
+                    "unexpected request".to_owned(),
+                ));
+            };
+            Ok(CatalogPage::Search {
+                query: query.clone(),
+                items: Vec::new(),
+            })
+        }
+
+        fn play(&mut self, playback: &CatalogPlayback) -> Result<(), CatalogError> {
+            self.plays
+                .send(playback.clone())
+                .map_err(|error| CatalogError::Unavailable(error.to_string()))
         }
     }
 
@@ -724,6 +932,36 @@ mod tests {
             );
             thread::yield_now();
         }
+    }
+
+    #[test]
+    fn runtime_forwards_one_exact_catalogue_playback_target() {
+        let (play_tx, play_rx) = mpsc::channel();
+        let runtime = CatalogRuntime::start_with_source(RecordingSource { plays: play_tx })
+            .expect("runtime should start");
+        runtime
+            .fetch(1, CatalogRequest::Search("shikari".to_owned()))
+            .expect("setup request should be accepted");
+        assert!(matches!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::Loaded { request_id: 1, .. }
+        ));
+        let playback = CatalogItem::new(
+            CatalogItemKind::Track,
+            "second",
+            "spotify:track:second",
+            "Second",
+            "Artist • Album",
+            None,
+        )
+        .with_playback_context("spotify:album:album")
+        .playback();
+
+        runtime
+            .play(playback.clone())
+            .expect("playback request should be accepted");
+
+        assert_eq!(play_rx.recv_timeout(Duration::from_secs(1)), Ok(playback));
     }
 
     #[test]

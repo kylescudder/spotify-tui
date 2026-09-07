@@ -1,4 +1,4 @@
-use crate::catalog::{CatalogEvent, CatalogItemKind, CatalogPage, CatalogRequest};
+use crate::catalog::{CatalogEvent, CatalogItemKind, CatalogPage, CatalogPlayback, CatalogRequest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserMode {
@@ -30,6 +30,7 @@ pub enum BrowserEffect {
         request: CatalogRequest,
     },
     Play(String),
+    PlayTrack(CatalogPlayback),
     Quit,
 }
 
@@ -79,6 +80,16 @@ impl BrowserState {
         }
     }
 
+    pub fn artwork_url(&self) -> Option<&str> {
+        match &self.view {
+            BrowserView::Page { page, selected } => page.artwork_url(*selected),
+            BrowserView::Closed
+            | BrowserView::Editing { .. }
+            | BrowserView::Loading { .. }
+            | BrowserView::Error { .. } => None,
+        }
+    }
+
     pub fn apply(&mut self, command: BrowserCommand) -> BrowserEffect {
         match command {
             BrowserCommand::OpenSearch => {
@@ -124,17 +135,11 @@ impl BrowserState {
     }
 
     pub fn resolve(&mut self, event: CatalogEvent) {
-        let request_id = match &event {
-            CatalogEvent::Loaded { request_id, .. } | CatalogEvent::Failed { request_id, .. } => {
-                *request_id
-            }
-        };
-        if self.pending_request_id != Some(request_id) {
-            return;
-        }
-        self.pending_request_id = None;
         match event {
-            CatalogEvent::Loaded { page, .. } => {
+            CatalogEvent::Loaded { request_id, page }
+                if self.pending_request_id == Some(request_id) =>
+            {
+                self.pending_request_id = None;
                 if self.pending_pushes_history
                     && let Some(BrowserView::Page { page, selected }) =
                         self.fallback.take().map(|view| *view)
@@ -145,12 +150,20 @@ impl BrowserState {
                     self.history.clear();
                 }
                 self.view = BrowserView::Page { page, selected: 0 };
+                self.pending_pushes_history = false;
             }
-            CatalogEvent::Failed { message, .. } => {
+            CatalogEvent::Failed {
+                request_id,
+                message,
+            } if self.pending_request_id == Some(request_id) => {
+                self.pending_request_id = None;
                 self.view = BrowserView::Error { message };
+                self.pending_pushes_history = false;
             }
+            CatalogEvent::Loaded { .. }
+            | CatalogEvent::Failed { .. }
+            | CatalogEvent::PlaybackFailed { .. } => {}
         }
-        self.pending_pushes_history = false;
     }
 
     fn submit_search(&mut self) -> BrowserEffect {
@@ -200,7 +213,12 @@ impl BrowserState {
                 format!("Loading {}…", item.name()),
                 true,
             ),
-            CatalogItemKind::Track | CatalogItemKind::Playlist => {
+            CatalogItemKind::Track => {
+                let playback = item.playback();
+                self.close();
+                BrowserEffect::PlayTrack(playback)
+            }
+            CatalogItemKind::Playlist => {
                 let uri = item.uri().to_owned();
                 self.close();
                 BrowserEffect::Play(uri)
@@ -350,9 +368,34 @@ mod tests {
 
         assert_eq!(
             browser.apply(BrowserCommand::Activate),
-            BrowserEffect::Play("spotify:track:track".to_owned())
+            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "track").playback())
         );
         assert_eq!(browser.mode(), BrowserMode::Closed);
+    }
+
+    #[test]
+    fn selecting_the_second_album_track_plays_the_second_track_uri() {
+        let mut browser = BrowserState::default();
+        browser.apply(BrowserCommand::OpenSearch);
+        browser.apply(BrowserCommand::Insert('x'));
+        browser.apply(BrowserCommand::Submit);
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: CatalogPage::Album {
+                album: item(CatalogItemKind::Album, "album"),
+                tracks: vec![
+                    item(CatalogItemKind::Track, "first"),
+                    item(CatalogItemKind::Track, "second"),
+                    item(CatalogItemKind::Track, "third"),
+                ],
+            },
+        });
+        browser.apply(BrowserCommand::Next);
+
+        assert_eq!(
+            browser.apply(BrowserCommand::Activate),
+            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "second").playback())
+        );
     }
 
     #[test]
@@ -397,7 +440,7 @@ mod tests {
 
         assert_eq!(
             browser.apply(BrowserCommand::Activate),
-            BrowserEffect::Play("spotify:track:track".to_owned())
+            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "track").playback())
         );
         assert_eq!(browser.mode(), BrowserMode::Closed);
     }

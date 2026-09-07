@@ -3,9 +3,10 @@
 ## Objective
 
 Build a polished, keyboard-first Spotify TUI that remains useful when Spotify's
-Web API is unavailable, rate-limited, or changes. Playback is always local
+Web API is unavailable, rate-limited, or changes. Audio playback is always local
 through `spotifyd`; optional Spotify Web API catalogue access supplies search
-and browse data without becoming a requirement for the now-playing controller.
+and browse data and starts exact catalogue selections on the active Spotifyd
+device without becoming a requirement for the now-playing controller.
 
 The target machine is Kyle's NixOS workstation (`stevie`) using Hyprland,
 Ghostty, PipeWire, Home Manager, and the dotfiles repository at
@@ -230,11 +231,13 @@ startup URI loading, manual retry, and daemon recovery; a private-D-Bus test
 covers activation and rediscovery across process-unique names. The artwork
 vertical slice is also implemented behind `ArtworkSource`, including bounded
 fetch/decode, in-memory caching, stale-result rejection, Kitty rendering, a
-half-block fallback, and normal/narrow layout tests. The catalogue vertical
+half-block fallback, responsive now-playing and catalogue artwork, and
+normal/narrow layout tests. The catalogue vertical
 slice is implemented behind `CatalogSource`: PKCE authentication and token
 refresh, typed search results, artist releases, album tracks, keyboard history,
-stale-result rejection, and URI handoff to local playback all have deterministic
-tests. The remaining work is:
+stale-result rejection, and exact URI playback on the active Spotifyd device all
+have deterministic tests. Catalogue playback deliberately bypasses Spotifyd
+0.4.2's off-by-one MPRIS `OpenUri` implementation. The remaining work is:
 
 Live validation on `stevie` has confirmed Spotifyd OAuth, phone-free activation,
 automatic recovery after restarting Spotifyd, and a successful `nix run .`
@@ -247,7 +250,9 @@ implementation tasks.
      pending search resumes after approval. Confirm refresh-token reuse after
      restarting the TUI.
    - Search for an artist, open an artist page, open an album, and play a track;
-     also play a direct track and playlist search result.
+     also play a direct track and playlist search result. Confirm the selected
+     track—not the following album track—starts and that catalogue artwork
+     follows search/page context without crowding the narrow layout.
    - Confirm cancellation, an unallowlisted user (`403`), quota exhaustion
      (`429`), network loss, empty results, and token-cache corruption all remain
      recoverable without disturbing local playback.
@@ -310,8 +315,9 @@ remaining implementation:
   state or artwork onscreen.
 - Missing or invalid artwork degrades cleanly.
 - An authenticated catalogue user can search artists, albums, tracks, and
-  playlists; traverse artist → release → track; start the selected URI through
-  local Spotifyd; and return through browser history without blocking playback.
+  playlists; traverse artist → release → track; start the exact selected URI on
+  the active Spotifyd device; see contextual catalogue artwork; and return
+  through browser history without blocking playback.
 - Catalogue auth cancellation, token refresh, `403`, `429`, network failure,
   and a missing or corrupt cache produce actionable errors and never prevent the
   local controller from launching.

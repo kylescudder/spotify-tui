@@ -52,6 +52,14 @@ pub enum AppEvent {
         track_revision: u64,
         message: String,
     },
+    CatalogArtworkLoaded {
+        catalog_revision: u64,
+        artwork: Artwork,
+    },
+    CatalogArtworkFailed {
+        catalog_revision: u64,
+        message: String,
+    },
     QuitRequested,
 }
 
@@ -105,8 +113,11 @@ pub struct AppState {
     connection: ConnectionState,
     playback: Option<PlaybackState>,
     artwork: ArtworkState,
+    catalog_artwork: ArtworkState,
+    catalog_artwork_url: Option<String>,
     browser: BrowserState,
     track_revision: u64,
+    catalog_revision: u64,
     should_quit: bool,
 }
 
@@ -116,8 +127,11 @@ impl Default for AppState {
             connection: ConnectionState::Connecting,
             playback: None,
             artwork: ArtworkState::Unavailable,
+            catalog_artwork: ArtworkState::Unavailable,
+            catalog_artwork_url: None,
             browser: BrowserState::default(),
             track_revision: 0,
+            catalog_revision: 0,
             should_quit: false,
         }
     }
@@ -136,6 +150,10 @@ impl AppState {
         &self.artwork
     }
 
+    pub const fn catalog_artwork(&self) -> &ArtworkState {
+        &self.catalog_artwork
+    }
+
     pub const fn browser(&self) -> &BrowserState {
         &self.browser
     }
@@ -146,6 +164,25 @@ impl AppState {
 
     pub const fn track_revision(&self) -> u64 {
         self.track_revision
+    }
+
+    pub const fn catalog_revision(&self) -> u64 {
+        self.catalog_revision
+    }
+
+    pub fn sync_catalog_artwork(&mut self, url: Option<&str>) -> Option<(u64, String)> {
+        if self.catalog_artwork_url.as_deref() == url {
+            return None;
+        }
+
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+        self.catalog_artwork_url = url.map(str::to_owned);
+        self.catalog_artwork = if url.is_some() {
+            ArtworkState::Loading
+        } else {
+            ArtworkState::Unavailable
+        };
+        url.map(|url| (self.catalog_revision, url.to_owned()))
     }
 
     pub const fn should_quit(&self) -> bool {
@@ -186,6 +223,19 @@ impl AppState {
                 self.artwork = ArtworkState::Failed(message);
             }
             AppEvent::ArtworkLoaded { .. } | AppEvent::ArtworkFailed { .. } => {}
+            AppEvent::CatalogArtworkLoaded {
+                catalog_revision,
+                artwork,
+            } if catalog_revision == self.catalog_revision => {
+                self.catalog_artwork = ArtworkState::Ready(artwork);
+            }
+            AppEvent::CatalogArtworkFailed {
+                catalog_revision,
+                message,
+            } if catalog_revision == self.catalog_revision => {
+                self.catalog_artwork = ArtworkState::Failed(message);
+            }
+            AppEvent::CatalogArtworkLoaded { .. } | AppEvent::CatalogArtworkFailed { .. } => {}
             AppEvent::QuitRequested => self.should_quit = true,
         }
     }
@@ -421,6 +471,35 @@ mod tests {
             &ConnectionState::Error("permission denied".to_owned())
         );
         assert!(state.playback().is_none());
+    }
+
+    #[test]
+    fn catalogue_artwork_tracks_selection_and_ignores_stale_downloads() {
+        let mut state = AppState::default();
+        let (first_revision, first_url) = state
+            .sync_catalog_artwork(Some("https://example.com/first.jpg"))
+            .expect("first selection should request artwork");
+        assert_eq!(first_url, "https://example.com/first.jpg");
+        assert_eq!(state.catalog_artwork(), &ArtworkState::Loading);
+
+        let (second_revision, _) = state
+            .sync_catalog_artwork(Some("https://example.com/second.jpg"))
+            .expect("changed selection should request artwork");
+        state.reduce(AppEvent::CatalogArtworkLoaded {
+            catalog_revision: first_revision,
+            artwork: Artwork::new(first_url, DynamicImage::new_rgb8(4, 4)),
+        });
+        assert_eq!(state.catalog_artwork(), &ArtworkState::Loading);
+
+        let artwork = Artwork::new(
+            "https://example.com/second.jpg".to_owned(),
+            DynamicImage::new_rgb8(4, 4),
+        );
+        state.reduce(AppEvent::CatalogArtworkLoaded {
+            catalog_revision: second_revision,
+            artwork: artwork.clone(),
+        });
+        assert_eq!(state.catalog_artwork(), &ArtworkState::Ready(artwork));
     }
 
     #[test]
