@@ -1,9 +1,12 @@
 use std::{
     env,
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fmt, io,
     process::{Command, Stdio},
 };
+
+#[cfg(any(target_os = "linux", test))]
+use std::ffi::OsStr;
 
 use thiserror::Error;
 
@@ -167,13 +170,10 @@ impl LifecycleConfig {
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn default_service() -> OsString {
     #[cfg(target_os = "macos")]
-    {
-        return OsString::from(DEFAULT_MACOS_SERVICE);
-    }
+    let service = DEFAULT_MACOS_SERVICE;
     #[cfg(not(target_os = "macos"))]
-    {
-        OsString::from(DEFAULT_LINUX_SERVICE)
-    }
+    let service = DEFAULT_LINUX_SERVICE;
+    OsString::from(service)
 }
 
 fn environment_value(name: &'static str) -> Result<Option<OsString>, SpotifydLifecycleError> {

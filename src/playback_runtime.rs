@@ -278,9 +278,10 @@ mod tests {
     };
 
     use super::*;
+    #[cfg(target_os = "linux")]
+    use crate::playback::MprisPlaybackSource;
     use crate::playback::{
-        MprisPlaybackSource, PlaybackCommand, PlaybackError, PlaybackSnapshot, PlaybackStatus,
-        TrackMetadata,
+        PlaybackCommand, PlaybackError, PlaybackSnapshot, PlaybackStatus, TrackMetadata,
     };
 
     struct FakePlaybackSource {
