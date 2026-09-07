@@ -41,6 +41,9 @@ uses semantic versioning once public releases begin.
 - Artist-page artwork now follows the selected release, falling back to the
   artist image, while a separate speculative worker prefetches nearby images
   into the shared LRU cache without blocking foreground artwork.
+- Cached artwork now bypasses the worker queue and is applied before drawing the
+  next frame; pending downloads and terminal encoding are checked every 16 ms
+  instead of waiting for the 250 ms idle input tick.
 - Start catalogue tracks through Spotify playback with an exact URI offset,
   working around Spotifyd 0.4.2's one-based/zero-based MPRIS `OpenUri` bug while
   retaining the selected album as the playback context.

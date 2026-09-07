@@ -14,7 +14,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use spotify_tui::{
-    app::{AppEvent, AppState, Command},
+    app::{AppEvent, AppState, ArtworkState, Command},
     artwork::{ArtworkEvent, ArtworkRenderer, ArtworkRuntime, ArtworkTarget},
     auth::{self, AuthOutcome},
     browser::{BrowserEffect, BrowserMode},
@@ -29,6 +29,9 @@ use spotify_tui::{
 };
 
 type Tui = Terminal<CrosstermBackend<io::Stdout>>;
+
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const ARTWORK_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 fn main() -> ExitCode {
     match cli::parse_args(env::args_os().skip(1)) {
@@ -211,9 +214,9 @@ fn run(
 ) -> io::Result<SessionOutcome> {
     loop {
         drain_playback_events(app, playback, artwork);
-        drain_artwork_events(app, artwork);
         drain_catalog_events(app, catalog);
         sync_catalog_artwork(app, artwork);
+        drain_artwork_events(app, artwork);
         if app.browser().mode() == BrowserMode::Closed {
             artwork_renderer.sync(app.track_revision(), app.artwork());
         } else {
@@ -221,7 +224,7 @@ fn run(
         }
         terminal.draw(|frame| ui::render(frame, app, theme, artwork_renderer))?;
 
-        if event::poll(Duration::from_millis(250))?
+        if event::poll(input_poll_interval(app, artwork_renderer))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
@@ -313,6 +316,19 @@ fn run(
                 }
             }
         }
+    }
+}
+
+fn input_poll_interval(app: &AppState, artwork_renderer: &ArtworkRenderer) -> Duration {
+    let visible_artwork = if app.browser().mode() == BrowserMode::Closed {
+        app.artwork()
+    } else {
+        app.catalog_artwork()
+    };
+    if matches!(visible_artwork, ArtworkState::Loading) || artwork_renderer.is_pending() {
+        ARTWORK_POLL_INTERVAL
+    } else {
+        IDLE_POLL_INTERVAL
     }
 }
 

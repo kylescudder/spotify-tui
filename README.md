@@ -202,8 +202,11 @@ pipeline with image URLs returned by the Spotify Web API. The TUI keeps the
 eight most recently used images in memory and optimistically prefetches up to
 four nearby results on a separate worker, so moving back through a list avoids
 another download and a slow speculative image cannot delay the selected one.
-Wide catalogue views show a borderless image beside the list; narrow views
-devote the full width to navigation instead.
+Cache hits are applied before the next frame is drawn, and the event loop checks
+for download and terminal-encoding completion every 16 milliseconds while art
+is pending instead of waiting for its normal 250-millisecond idle tick. Wide
+catalogue views show a borderless image beside the list; narrow views devote the
+full width to navigation instead.
 
 ### Playback controls
 

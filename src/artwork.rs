@@ -195,9 +195,9 @@ type ArtworkCache = Arc<Mutex<LruCache<String, Artwork>>>;
 pub struct ArtworkRuntime {
     request_tx: mpsc::Sender<ArtworkRequest>,
     prefetch_tx: mpsc::Sender<PrefetchRequest>,
+    event_tx: mpsc::Sender<ArtworkEvent>,
     event_rx: mpsc::Receiver<ArtworkEvent>,
     workers: Vec<JoinHandle<()>>,
-    #[cfg(test)]
     cache: ArtworkCache,
     last_prefetch: Mutex<Vec<String>>,
 }
@@ -220,10 +220,16 @@ impl ArtworkRuntime {
         let source = Arc::new(source);
         let foreground_source = Arc::clone(&source);
         let foreground_cache = Arc::clone(&cache);
+        let foreground_event_tx = event_tx.clone();
         let worker = thread::Builder::new()
             .name("spotify-tui-artwork".to_owned())
             .spawn(move || {
-                run_worker(foreground_source, foreground_cache, request_rx, &event_tx);
+                run_worker(
+                    foreground_source,
+                    foreground_cache,
+                    request_rx,
+                    &foreground_event_tx,
+                );
             })?;
         let prefetch_worker = thread::Builder::new()
             .name("spotify-tui-artwork-prefetch".to_owned())
@@ -235,9 +241,9 @@ impl ArtworkRuntime {
         Ok(Self {
             request_tx,
             prefetch_tx,
+            event_tx,
             event_rx,
             workers: vec![worker, prefetch_worker],
-            #[cfg(test)]
             cache,
             last_prefetch: Mutex::new(Vec::new()),
         })
@@ -248,11 +254,15 @@ impl ArtworkRuntime {
         target: ArtworkTarget,
         url: impl Into<String>,
     ) -> Result<(), ArtworkRuntimeError> {
+        let url = url.into();
+        if let Some(artwork) = cached_artwork(&self.cache, &url) {
+            return self
+                .event_tx
+                .send(ArtworkEvent::Loaded { target, artwork })
+                .map_err(|_| ArtworkRuntimeError);
+        }
         self.request_tx
-            .send(ArtworkRequest::Load {
-                target,
-                url: url.into(),
-            })
+            .send(ArtworkRequest::Load { target, url })
             .map_err(|_| ArtworkRuntimeError)
     }
 
@@ -363,12 +373,7 @@ fn fetch_cached<S: ArtworkSource>(
     cache: &ArtworkCache,
     url: &str,
 ) -> Result<Artwork, ArtworkError> {
-    if let Some(artwork) = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(url)
-        .cloned()
-    {
+    if let Some(artwork) = cached_artwork(cache, url) {
         return Ok(artwork);
     }
 
@@ -378,6 +383,14 @@ fn fetch_cached<S: ArtworkSource>(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .put(url.to_owned(), artwork.clone());
     Ok(artwork)
+}
+
+fn cached_artwork(cache: &ArtworkCache, url: &str) -> Option<Artwork> {
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(url)
+        .cloned()
 }
 
 fn queue_latest_by_target(
@@ -418,6 +431,8 @@ pub struct ArtworkRenderer {
     response_rx: mpsc::Receiver<Result<ResizeResponse, RenderError>>,
     worker: Option<JoinHandle<()>>,
     current_image: Option<(u64, String)>,
+    needs_render: bool,
+    pending: bool,
 }
 
 impl ArtworkRenderer {
@@ -451,17 +466,25 @@ impl ArtworkRenderer {
             response_rx,
             worker: Some(worker),
             current_image: None,
+            needs_render: false,
+            pending: false,
         })
     }
 
     pub fn sync(&mut self, track_revision: u64, artwork: &ArtworkState) {
         while let Ok(result) = self.response_rx.try_recv() {
-            if let Ok(response) = result {
-                let _ = self
-                    .protocol
-                    .as_mut()
-                    .expect("renderer protocol should exist")
-                    .update_resized_protocol(response);
+            match result {
+                Ok(response) => {
+                    if self
+                        .protocol
+                        .as_mut()
+                        .expect("renderer protocol should exist")
+                        .update_resized_protocol(response)
+                    {
+                        self.pending = false;
+                    }
+                }
+                Err(_) => self.pending = false,
             }
         }
 
@@ -475,6 +498,8 @@ impl ArtworkRenderer {
                         .expect("renderer protocol should exist")
                         .replace_protocol(protocol);
                     self.current_image = Some(identity);
+                    self.needs_render = true;
+                    self.pending = false;
                 }
             }
             ArtworkState::Unavailable | ArtworkState::Loading | ArtworkState::Failed(_) => {
@@ -484,8 +509,14 @@ impl ArtworkRenderer {
                         .expect("renderer protocol should exist")
                         .empty_protocol();
                 }
+                self.needs_render = false;
+                self.pending = false;
             }
         }
+    }
+
+    pub const fn is_pending(&self) -> bool {
+        self.pending
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
@@ -496,6 +527,10 @@ impl ArtworkRenderer {
                 .as_mut()
                 .expect("renderer protocol should exist"),
         );
+        if self.needs_render {
+            self.needs_render = false;
+            self.pending = true;
+        }
     }
 }
 
@@ -688,6 +723,58 @@ mod tests {
     }
 
     #[test]
+    fn cached_foreground_request_bypasses_a_busy_worker() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let runtime = ArtworkRuntime::start_with_source(BlockingPrefetchSource {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        })
+        .expect("artwork runtime should start");
+        runtime
+            .load(
+                ArtworkTarget::Catalog(1),
+                "https://example.com/prefetch.jpg",
+            )
+            .expect("blocking foreground load should be accepted");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("foreground worker should become busy");
+
+        let cached_url = "https://example.com/cached.jpg";
+        runtime
+            .prefetch([cached_url.to_owned()])
+            .expect("prefetch should be accepted");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !runtime.is_cached(cached_url) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for prefetched artwork"
+            );
+            thread::yield_now();
+        }
+
+        runtime
+            .load(ArtworkTarget::Catalog(2), cached_url)
+            .expect("cached foreground load should be accepted");
+        let immediate = runtime.try_event();
+        release_tx
+            .send(())
+            .expect("blocked foreground load should still be running");
+
+        assert!(
+            matches!(
+                immediate,
+                Some(ArtworkEvent::Loaded {
+                    target: ArtworkTarget::Catalog(2),
+                    ..
+                })
+            ),
+            "a prefetched image should be available in the current UI frame"
+        );
+    }
+
+    #[test]
     fn pending_requests_keep_the_latest_playback_and_catalogue_images() {
         let mut pending = Vec::new();
         assert!(queue_latest_by_target(
@@ -753,11 +840,13 @@ mod tests {
             DynamicImage::ImageRgba8(ImageBuffer::from_pixel(8, 8, Rgba([255, 0, 0, 255]))),
         ));
         renderer.sync(1, &artwork);
+        assert!(!renderer.is_pending());
         let mut terminal =
             Terminal::new(TestBackend::new(8, 4)).expect("test backend is infallible");
         terminal
             .draw(|frame| renderer.render(frame, frame.area()))
             .expect("test backend is infallible");
+        assert!(renderer.is_pending());
 
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
@@ -772,6 +861,7 @@ mod tests {
                 .iter()
                 .any(|cell| cell.symbol() == "▀");
             if rendered {
+                assert!(!renderer.is_pending());
                 break;
             }
             assert!(

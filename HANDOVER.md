@@ -104,13 +104,15 @@ enforces HTTPS, download timeouts, transfer and decode limits, downsizes large
 images, and keeps a bounded in-memory LRU cache. Catalogue navigation
 optimistically prefetches up to four nearby images on a dedicated worker;
 the selected image has its own foreground worker and therefore never waits for
-speculative work. Artist pages preview the selected release artwork and fall
-back to the artist image when needed. Download/decode and terminal
-resize/encoding run on separate workers. `AppState` rejects results whose track
-revision is stale. Ghostty uses the detected Kitty protocol; unsupported
-terminals use Unicode half blocks, and missing or invalid art renders a text
-placeholder. The macOS and Windows playback adapters must supply equivalent
-artwork metadata or a documented local alternative.
+speculative work. Cache hits bypass that worker and reach `AppState` before the
+next frame, while pending fetch and terminal-encoding results use a 16 ms poll
+interval rather than the 250 ms idle interval. Artist pages preview the selected
+release artwork and fall back to the artist image when needed. Download/decode
+and terminal resize/encoding run on separate workers. `AppState` rejects results
+whose track revision is stale. Ghostty uses the detected Kitty protocol;
+unsupported terminals use Unicode half blocks, and missing or invalid art
+renders a text placeholder. The macOS and Windows playback adapters must supply
+equivalent artwork metadata or a documented local alternative.
 
 ## Recommended implementation
 
@@ -235,9 +237,10 @@ startup URI loading, manual retry, and daemon recovery; a private-D-Bus test
 covers activation and rediscovery across process-unique names. The artwork
 vertical slice is also implemented behind `ArtworkSource`, including bounded
 fetch/decode, eight-entry in-memory LRU caching, non-blocking nearby-image
-prefetch, stale-result rejection, Kitty rendering, a half-block fallback,
-selected-release previews on artist pages, responsive now-playing and catalogue
-artwork, and normal/narrow layout tests. The catalogue vertical
+prefetch, same-frame cache hits, responsive pending-result polling,
+stale-result rejection, Kitty rendering, a half-block fallback, selected-release
+previews on artist pages, responsive now-playing and catalogue artwork, and
+normal/narrow layout tests. The catalogue vertical
 slice is implemented behind `CatalogSource`: PKCE authentication and token
 refresh, typed search results, artist releases, album tracks, keyboard history,
 stale-result rejection, and exact URI playback on the active Spotifyd device all
