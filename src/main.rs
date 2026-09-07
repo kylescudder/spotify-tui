@@ -381,6 +381,12 @@ fn drain_artwork_events(app: &mut AppState, artwork: &ArtworkRuntime) {
 
 fn sync_catalog_artwork(app: &mut AppState, artwork: &ArtworkRuntime) {
     let url = app.browser().artwork_url().map(str::to_owned);
+    let prefetch_urls = app
+        .browser()
+        .prefetch_artwork_urls()
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     if let Some((catalog_revision, url)) = app.sync_catalog_artwork(url.as_deref())
         && let Err(error) = artwork.load(ArtworkTarget::Catalog(catalog_revision), url)
     {
@@ -389,6 +395,7 @@ fn sync_catalog_artwork(app: &mut AppState, artwork: &ArtworkRuntime) {
             message: error.to_string(),
         });
     }
+    let _ = artwork.prefetch(prefetch_urls);
 }
 
 fn drain_catalog_events(app: &mut AppState, catalog: Option<&CatalogRuntime>) {

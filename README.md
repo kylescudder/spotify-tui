@@ -198,9 +198,12 @@ Unicode half blocks, while missing or invalid artwork displays a text
 placeholder.
 
 Search results and artist and album pages reuse that same bounded artwork
-pipeline with image URLs returned by the Spotify Web API. Wide catalogue views
-show a borderless image beside the list; narrow views devote the full width to
-navigation instead.
+pipeline with image URLs returned by the Spotify Web API. The TUI keeps the
+eight most recently used images in memory and optimistically prefetches up to
+four nearby results on a separate worker, so moving back through a list avoids
+another download and a slow speculative image cannot delay the selected one.
+Wide catalogue views show a borderless image beside the list; narrow views
+devote the full width to navigation instead.
 
 ### Playback controls
 
@@ -302,12 +305,13 @@ that has no resumable context.
 - `Esc`, `h`, or `Left` returns to the previous page.
 - `/` starts a new search and `q` quits.
 
-An artist page shows the artist's album and single releases. Opening a release
-shows its tracks. Selecting a track asks Spotify to start that exact URI on the
-active Spotifyd device, retaining its album as the playback context. This
-avoids an off-by-one bug in Spotifyd 0.4.2's MPRIS `OpenUri` implementation;
-play/pause, previous/next, seeking, volume, and all now-playing state remain on
-the local MPRIS connection.
+An artist page shows the artist's album and single releases. Its artwork preview
+follows the selected release, falling back to the artist image when a release
+has no cover. Opening a release shows its tracks. Selecting a track asks Spotify
+to start that exact URI on the active Spotifyd device, retaining its album as
+the playback context. This avoids an off-by-one bug in Spotifyd 0.4.2's MPRIS
+`OpenUri` implementation; play/pause, previous/next, seeking, volume, and all
+now-playing state remain on the local MPRIS connection.
 
 Spotify does not provide a distributable, zero-configuration Web API client for
 this use case. Each installation therefore needs a Spotify developer app client

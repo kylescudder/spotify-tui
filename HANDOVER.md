@@ -101,7 +101,11 @@ reduced, display-only builds.
 
 On Linux, album art comes from the MPRIS `mpris:artUrl` value. `ArtworkSource`
 enforces HTTPS, download timeouts, transfer and decode limits, downsizes large
-images, and keeps a bounded in-memory LRU cache. Download/decode and terminal
+images, and keeps a bounded in-memory LRU cache. Catalogue navigation
+optimistically prefetches up to four nearby images on a dedicated worker;
+the selected image has its own foreground worker and therefore never waits for
+speculative work. Artist pages preview the selected release artwork and fall
+back to the artist image when needed. Download/decode and terminal
 resize/encoding run on separate workers. `AppState` rejects results whose track
 revision is stale. Ghostty uses the detected Kitty protocol; unsupported
 terminals use Unicode half blocks, and missing or invalid art renders a text
@@ -230,9 +234,10 @@ Deterministic fake-source tests cover updates, commands, failures, activation,
 startup URI loading, manual retry, and daemon recovery; a private-D-Bus test
 covers activation and rediscovery across process-unique names. The artwork
 vertical slice is also implemented behind `ArtworkSource`, including bounded
-fetch/decode, in-memory caching, stale-result rejection, Kitty rendering, a
-half-block fallback, responsive now-playing and catalogue artwork, and
-normal/narrow layout tests. The catalogue vertical
+fetch/decode, eight-entry in-memory LRU caching, non-blocking nearby-image
+prefetch, stale-result rejection, Kitty rendering, a half-block fallback,
+selected-release previews on artist pages, responsive now-playing and catalogue
+artwork, and normal/narrow layout tests. The catalogue vertical
 slice is implemented behind `CatalogSource`: PKCE authentication and token
 refresh, typed search results, artist releases, album tracks, keyboard history,
 stale-result rejection, and exact URI playback on the active Spotifyd device all
@@ -252,7 +257,10 @@ implementation tasks.
    - Search for an artist, open an artist page, open an album, and play a track;
      also play a direct track and playlist search result. Confirm the selected
      track—not the following album track—starts and that catalogue artwork
-     follows search/page context without crowding the narrow layout.
+     follows search/page context without crowding the narrow layout. Rapidly
+     scroll through releases and back again; confirm the selected cover follows
+     the row and previously visited or prefetched covers appear without another
+     visible loading delay.
    - Confirm cancellation, an unallowlisted user (`403`), quota exhaustion
      (`429`), network loss, empty results, and token-cache corruption all remain
      recoverable without disturbing local playback.

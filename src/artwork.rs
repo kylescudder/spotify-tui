@@ -1,8 +1,9 @@
 use std::{
+    collections::HashSet,
     fmt, io,
     io::{Cursor, Read},
     num::NonZeroUsize,
-    sync::{Arc, mpsc},
+    sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -21,6 +22,7 @@ use thiserror::Error;
 use crate::{app::ArtworkState, config::Theme};
 
 const CACHE_ENTRIES: usize = 8;
+const PREFETCH_LIMIT: usize = 4;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_DOWNLOAD_BYTES: usize = 5 * 1024 * 1024;
 const MAX_DECODED_EDGE: u32 = 2_048;
@@ -183,10 +185,21 @@ enum ArtworkRequest {
     Shutdown,
 }
 
+enum PrefetchRequest {
+    Load(Vec<String>),
+    Shutdown,
+}
+
+type ArtworkCache = Arc<Mutex<LruCache<String, Artwork>>>;
+
 pub struct ArtworkRuntime {
     request_tx: mpsc::Sender<ArtworkRequest>,
+    prefetch_tx: mpsc::Sender<PrefetchRequest>,
     event_rx: mpsc::Receiver<ArtworkEvent>,
-    worker: Option<JoinHandle<()>>,
+    workers: Vec<JoinHandle<()>>,
+    #[cfg(test)]
+    cache: ArtworkCache,
+    last_prefetch: Mutex<Vec<String>>,
 }
 
 impl ArtworkRuntime {
@@ -196,18 +209,37 @@ impl ArtworkRuntime {
 
     pub fn start_with_source<S>(source: S) -> io::Result<Self>
     where
-        S: ArtworkSource + Send + 'static,
+        S: ArtworkSource + Send + Sync + 'static,
     {
         let (request_tx, request_rx) = mpsc::channel();
+        let (prefetch_tx, prefetch_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
+        let cache = Arc::new(Mutex::new(LruCache::new(
+            NonZeroUsize::new(CACHE_ENTRIES).expect("cache is non-empty"),
+        )));
+        let source = Arc::new(source);
+        let foreground_source = Arc::clone(&source);
+        let foreground_cache = Arc::clone(&cache);
         let worker = thread::Builder::new()
             .name("spotify-tui-artwork".to_owned())
-            .spawn(move || run_worker(source, request_rx, &event_tx))?;
+            .spawn(move || {
+                run_worker(foreground_source, foreground_cache, request_rx, &event_tx);
+            })?;
+        let prefetch_worker = thread::Builder::new()
+            .name("spotify-tui-artwork-prefetch".to_owned())
+            .spawn({
+                let cache = Arc::clone(&cache);
+                move || run_prefetch_worker(source, cache, prefetch_rx)
+            })?;
 
         Ok(Self {
             request_tx,
+            prefetch_tx,
             event_rx,
-            worker: Some(worker),
+            workers: vec![worker, prefetch_worker],
+            #[cfg(test)]
+            cache,
+            last_prefetch: Mutex::new(Vec::new()),
         })
     }
 
@@ -227,15 +259,49 @@ impl ArtworkRuntime {
     pub fn try_event(&self) -> Option<ArtworkEvent> {
         self.event_rx.try_recv().ok()
     }
+
+    pub fn prefetch(
+        &self,
+        urls: impl IntoIterator<Item = String>,
+    ) -> Result<(), ArtworkRuntimeError> {
+        let mut seen = HashSet::new();
+        let urls = urls
+            .into_iter()
+            .filter(|url| seen.insert(url.clone()))
+            .take(PREFETCH_LIMIT)
+            .collect::<Vec<_>>();
+        let mut previous = self
+            .last_prefetch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *previous == urls {
+            return Ok(());
+        }
+        previous.clone_from(&urls);
+        drop(previous);
+        if urls.is_empty() {
+            return Ok(());
+        }
+        self.prefetch_tx
+            .send(PrefetchRequest::Load(urls))
+            .map_err(|_| ArtworkRuntimeError)
+    }
+
+    #[cfg(test)]
+    fn is_cached(&self, url: &str) -> bool {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(url)
+    }
 }
 
 fn run_worker<S: ArtworkSource>(
-    source: S,
+    source: Arc<S>,
+    cache: ArtworkCache,
     request_rx: mpsc::Receiver<ArtworkRequest>,
     event_tx: &mpsc::Sender<ArtworkEvent>,
 ) {
-    let mut cache = LruCache::new(NonZeroUsize::new(CACHE_ENTRIES).expect("cache is non-empty"));
-
     while let Ok(request) = request_rx.recv() {
         let mut pending = Vec::with_capacity(2);
         if !queue_latest_by_target(&mut pending, request) {
@@ -248,16 +314,7 @@ fn run_worker<S: ArtworkSource>(
         }
 
         for (target, url) in pending {
-            let result = cache.get(&url).cloned().map_or_else(
-                || {
-                    source.fetch(&url).map(|image| {
-                        let artwork = Artwork::new(url.clone(), image);
-                        cache.put(url.clone(), artwork.clone());
-                        artwork
-                    })
-                },
-                Ok,
-            );
+            let result = fetch_cached(source.as_ref(), &cache, &url);
             let event = match result {
                 Ok(artwork) => ArtworkEvent::Loaded { target, artwork },
                 Err(error) => ArtworkEvent::Failed {
@@ -270,6 +327,57 @@ fn run_worker<S: ArtworkSource>(
             }
         }
     }
+}
+
+fn run_prefetch_worker<S: ArtworkSource>(
+    source: Arc<S>,
+    cache: ArtworkCache,
+    request_rx: mpsc::Receiver<PrefetchRequest>,
+) {
+    while let Ok(mut request) = request_rx.recv() {
+        'batch: loop {
+            while let Ok(newer) = request_rx.try_recv() {
+                request = newer;
+            }
+            let PrefetchRequest::Load(urls) = request else {
+                return;
+            };
+            for url in urls {
+                let _ = fetch_cached(source.as_ref(), &cache, &url);
+                let mut replacement = None;
+                while let Ok(newer) = request_rx.try_recv() {
+                    replacement = Some(newer);
+                }
+                if let Some(newer) = replacement {
+                    request = newer;
+                    continue 'batch;
+                }
+            }
+            break;
+        }
+    }
+}
+
+fn fetch_cached<S: ArtworkSource>(
+    source: &S,
+    cache: &ArtworkCache,
+    url: &str,
+) -> Result<Artwork, ArtworkError> {
+    if let Some(artwork) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(url)
+        .cloned()
+    {
+        return Ok(artwork);
+    }
+
+    let artwork = Artwork::new(url.to_owned(), source.fetch(url)?);
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .put(url.to_owned(), artwork.clone());
+    Ok(artwork)
 }
 
 fn queue_latest_by_target(
@@ -293,7 +401,8 @@ fn queue_latest_by_target(
 impl Drop for ArtworkRuntime {
     fn drop(&mut self) {
         let _ = self.request_tx.send(ArtworkRequest::Shutdown);
-        if let Some(worker) = self.worker.take() {
+        let _ = self.prefetch_tx.send(PrefetchRequest::Shutdown);
+        for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
     }
@@ -437,6 +546,25 @@ mod tests {
         fetches: Arc<AtomicUsize>,
     }
 
+    struct BlockingPrefetchSource {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl ArtworkSource for BlockingPrefetchSource {
+        fn fetch(&self, url: &str) -> Result<DynamicImage, ArtworkError> {
+            if url.ends_with("prefetch.jpg") {
+                let _ = self.entered.send(());
+                let _ = self
+                    .release
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv();
+            }
+            Ok(DynamicImage::new_rgb8(4, 4))
+        }
+    }
+
     impl ArtworkSource for CountingSource {
         fn fetch(&self, _url: &str) -> Result<DynamicImage, ArtworkError> {
             self.fetches.fetch_add(1, Ordering::Relaxed);
@@ -488,6 +616,75 @@ mod tests {
             }
         ));
         assert_eq!(fetches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn prefetched_artwork_is_reused_by_a_foreground_selection() {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let runtime = ArtworkRuntime::start_with_source(CountingSource {
+            fetches: Arc::clone(&fetches),
+        })
+        .expect("artwork runtime should start");
+        let url = "https://example.com/prefetched.jpg";
+
+        runtime
+            .prefetch([url.to_owned()])
+            .expect("prefetch should be accepted");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !runtime.is_cached(url) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for prefetched artwork"
+            );
+            thread::yield_now();
+        }
+        runtime
+            .load(ArtworkTarget::Catalog(1), url)
+            .expect("foreground load should be accepted");
+
+        assert!(matches!(
+            receive_event(&runtime),
+            ArtworkEvent::Loaded {
+                target: ArtworkTarget::Catalog(1),
+                ..
+            }
+        ));
+        assert_eq!(fetches.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn foreground_artwork_does_not_wait_for_a_slow_prefetch() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let runtime = ArtworkRuntime::start_with_source(BlockingPrefetchSource {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        })
+        .expect("artwork runtime should start");
+        runtime
+            .prefetch(["https://example.com/prefetch.jpg".to_owned()])
+            .expect("prefetch should be accepted");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("prefetch should begin");
+
+        runtime
+            .load(
+                ArtworkTarget::Catalog(2),
+                "https://example.com/foreground.jpg",
+            )
+            .expect("foreground load should be accepted");
+        assert!(matches!(
+            receive_event(&runtime),
+            ArtworkEvent::Loaded {
+                target: ArtworkTarget::Catalog(2),
+                ..
+            }
+        ));
+
+        release_tx
+            .send(())
+            .expect("blocked prefetch should still be running");
     }
 
     #[test]

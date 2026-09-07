@@ -174,9 +174,26 @@ impl CatalogPage {
     pub fn artwork_url(&self, selected: usize) -> Option<&str> {
         match self {
             Self::Search { items, .. } => items.get(selected).and_then(CatalogItem::image_url),
-            Self::Artist { artist, .. } => artist.image_url(),
+            Self::Artist { artist, releases } => releases
+                .get(selected)
+                .and_then(CatalogItem::image_url)
+                .or_else(|| artist.image_url()),
             Self::Album { album, .. } => album.image_url(),
         }
+    }
+
+    pub fn prefetch_artwork_urls(&self, selected: usize) -> Vec<&str> {
+        let items = match self {
+            Self::Search { items, .. } => items,
+            Self::Artist { releases, .. } => releases,
+            Self::Album { .. } => return Vec::new(),
+        };
+        items
+            .iter()
+            .skip(selected.saturating_add(1))
+            .chain(items[..selected.min(items.len())].iter().rev())
+            .filter_map(CatalogItem::image_url)
+            .collect()
     }
 }
 
@@ -865,6 +882,47 @@ mod tests {
                 "offset": { "uri": "spotify:track:track-2" },
                 "position_ms": 0
             })
+        );
+    }
+
+    #[test]
+    fn artist_page_uses_the_selected_release_as_its_primary_artwork() {
+        let artist = CatalogItem::new(
+            CatalogItemKind::Artist,
+            "artist",
+            "spotify:artist:artist",
+            "Architects",
+            "Artist",
+            Some("https://example.com/architects.jpg".to_owned()),
+        );
+        let first_album = CatalogItem::new(
+            CatalogItemKind::Album,
+            "first",
+            "spotify:album:first",
+            "First album",
+            "Architects • 2025",
+            Some("https://example.com/first.jpg".to_owned()),
+        );
+        let selected_album = CatalogItem::new(
+            CatalogItemKind::Album,
+            "selected",
+            "spotify:album:selected",
+            "Selected album",
+            "Architects • 2022",
+            Some("https://example.com/selected.jpg".to_owned()),
+        );
+        let page = CatalogPage::Artist {
+            artist,
+            releases: vec![first_album, selected_album],
+        };
+
+        assert_eq!(
+            page.artwork_url(1),
+            Some("https://example.com/selected.jpg")
+        );
+        assert_eq!(
+            page.prefetch_artwork_urls(1),
+            vec!["https://example.com/first.jpg"]
         );
     }
 

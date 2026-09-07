@@ -90,6 +90,16 @@ impl BrowserState {
         }
     }
 
+    pub fn prefetch_artwork_urls(&self) -> Vec<&str> {
+        match &self.view {
+            BrowserView::Page { page, selected } => page.prefetch_artwork_urls(*selected),
+            BrowserView::Closed
+            | BrowserView::Editing { .. }
+            | BrowserView::Loading { .. }
+            | BrowserView::Error { .. } => Vec::new(),
+        }
+    }
+
     pub fn apply(&mut self, command: BrowserCommand) -> BrowserEffect {
         match command {
             BrowserCommand::OpenSearch => {
@@ -295,6 +305,17 @@ mod tests {
         )
     }
 
+    fn item_with_artwork(kind: CatalogItemKind, id: &str) -> CatalogItem {
+        CatalogItem::new(
+            kind,
+            id,
+            format!("spotify:{}:{id}", kind.to_string().to_ascii_lowercase()),
+            format!("Item {id}"),
+            kind.to_string(),
+            Some(format!("https://example.com/{id}.jpg")),
+        )
+    }
+
     fn search_page(items: Vec<CatalogItem>) -> CatalogPage {
         CatalogPage::Search {
             query: "shikari".to_owned(),
@@ -353,6 +374,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn artist_page_artwork_tracks_the_selected_release() {
+        let mut browser = BrowserState::default();
+        browser.apply(BrowserCommand::OpenSearch);
+        browser.apply(BrowserCommand::Insert('x'));
+        browser.apply(BrowserCommand::Submit);
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: search_page(vec![item_with_artwork(CatalogItemKind::Artist, "artist")]),
+        });
+        browser.apply(BrowserCommand::Activate);
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 2,
+            page: CatalogPage::Artist {
+                artist: item_with_artwork(CatalogItemKind::Artist, "artist"),
+                releases: vec![
+                    item_with_artwork(CatalogItemKind::Album, "first"),
+                    item_with_artwork(CatalogItemKind::Album, "second"),
+                ],
+            },
+        });
+        assert_eq!(browser.artwork_url(), Some("https://example.com/first.jpg"));
+
+        browser.apply(BrowserCommand::Next);
+
+        assert_eq!(
+            browser.artwork_url(),
+            Some("https://example.com/second.jpg")
+        );
+        assert_eq!(
+            browser.prefetch_artwork_urls(),
+            vec!["https://example.com/first.jpg"]
+        );
     }
 
     #[test]

@@ -38,6 +38,9 @@ uses semantic versioning once public releases begin.
   loading, and local Spotifyd playback for selected content.
 - Contextual artist and album imagery in responsive catalogue views, using the
   existing bounded asynchronous artwork cache and narrow-layout fallback.
+- Artist-page artwork now follows the selected release, falling back to the
+  artist image, while a separate speculative worker prefetches nearby images
+  into the shared LRU cache without blocking foreground artwork.
 - Start catalogue tracks through Spotify playback with an exact URI offset,
   working around Spotifyd 0.4.2's one-based/zero-based MPRIS `OpenUri` bug while
   retaining the selected album as the playback context.
