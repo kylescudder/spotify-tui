@@ -262,7 +262,9 @@ slice is implemented behind `CatalogSource`: PKCE authentication and token
 refresh, typed search results, artist releases, album tracks, keyboard history,
 stale-result rejection, and exact URI playback on the active Spotifyd device all
 have deterministic tests. Catalogue playback deliberately bypasses Spotifyd
-0.4.2's off-by-one MPRIS `OpenUri` implementation. The remaining work is:
+0.4.2's off-by-one MPRIS `OpenUri` implementation, while a Web API `404` falls
+back to the selected local URI instead of becoming a fatal player state. The
+remaining work is:
 
 Live validation on `stevie` has confirmed Spotifyd OAuth, phone-free activation,
 automatic recovery after restarting Spotifyd, a successful `nix run .` build,

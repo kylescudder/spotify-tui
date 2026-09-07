@@ -50,6 +50,9 @@ uses semantic versioning once public releases begin.
 - Start catalogue tracks through Spotify playback with an exact URI offset,
   working around Spotifyd 0.4.2's one-based/zero-based MPRIS `OpenUri` bug while
   retaining the selected album as the playback context.
+- Fall back to the same selected track through local Spotifyd control when the
+  Web API temporarily returns `404` because it cannot see an active device,
+  instead of replacing the player with a fatal catalogue error.
 - Removed the planned audio spectrum from the product scope and dropped the
   unused `cava` dependency from Nix and Homebrew packaging.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,

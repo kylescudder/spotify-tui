@@ -172,7 +172,8 @@ impl BrowserState {
             }
             CatalogEvent::Loaded { .. }
             | CatalogEvent::Failed { .. }
-            | CatalogEvent::PlaybackFailed { .. } => {}
+            | CatalogEvent::PlaybackFailed { .. }
+            | CatalogEvent::PlaybackFallback { .. } => {}
         }
     }
 

@@ -218,7 +218,7 @@ fn run(
 ) -> io::Result<SessionOutcome> {
     loop {
         drain_playback_events(app, services);
-        drain_catalog_events(app, services.catalog);
+        drain_catalog_events(app, services);
         sync_catalog_artwork(app, services.artwork);
         drain_artwork_events(app, services.artwork);
         if app.browser().mode() == BrowserMode::Closed {
@@ -426,14 +426,21 @@ fn sync_catalog_artwork(app: &mut AppState, artwork: &ArtworkRuntime) {
     let _ = artwork.prefetch(prefetch_urls);
 }
 
-fn drain_catalog_events(app: &mut AppState, catalog: Option<&CatalogRuntime>) {
-    let Some(catalog) = catalog else {
+fn drain_catalog_events(app: &mut AppState, services: &RuntimeServices<'_>) {
+    let Some(catalog) = services.catalog else {
         return;
     };
     while let Some(event) = catalog.try_event() {
         match event {
             CatalogEvent::PlaybackFailed { message } => {
                 app.reduce(AppEvent::PlaybackFailed(message));
+            }
+            CatalogEvent::PlaybackFallback { playback } => {
+                dispatch(
+                    app,
+                    services.playback,
+                    PlaybackCommand::OpenUri(playback.uri().to_owned()),
+                );
             }
             event @ (CatalogEvent::Loaded { .. } | CatalogEvent::Failed { .. }) => {
                 app.browser_mut().resolve(event);

@@ -299,15 +299,15 @@ impl SpotifyCatalogSource {
             Err(ureq::Error::StatusCode(401)) => {
                 self.refresh_or_authenticate()?;
                 request_playback(&self.agent, playback, self.token.access_token())
-                    .map_err(CatalogError::from_http)?;
+                    .map_err(CatalogError::from_playback_http)?;
             }
             Err(ureq::Error::StatusCode(403)) => {
                 self.authenticate()?;
                 request_playback(&self.agent, playback, self.token.access_token())
-                    .map_err(CatalogError::from_http)?;
+                    .map_err(CatalogError::from_playback_http)?;
             }
             result => {
-                result.map_err(CatalogError::from_http)?;
+                result.map_err(CatalogError::from_playback_http)?;
             }
         }
         Ok(())
@@ -413,6 +413,7 @@ pub enum CatalogEvent {
     Loaded { request_id: u64, page: CatalogPage },
     Failed { request_id: u64, message: String },
     PlaybackFailed { message: String },
+    PlaybackFallback { playback: CatalogPlayback },
 }
 
 enum RuntimeRequest {
@@ -532,13 +533,16 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
                     },
                     |source| source.play(&playback),
                 );
-                if let Err(error) = result
-                    && event_tx
-                        .send(CatalogEvent::PlaybackFailed {
-                            message: error.to_string(),
-                        })
-                        .is_err()
-                {
+                let event = match result {
+                    Ok(()) => None,
+                    Err(CatalogError::PlaybackUnavailable) => {
+                        Some(CatalogEvent::PlaybackFallback { playback })
+                    }
+                    Err(error) => Some(CatalogEvent::PlaybackFailed {
+                        message: error.to_string(),
+                    }),
+                };
+                if event.is_some_and(|event| event_tx.send(event).is_err()) {
                     return;
                 }
                 continue;
@@ -595,6 +599,8 @@ pub enum CatalogError {
     QuotaExceeded,
     #[error("Spotify catalogue request failed: {0}")]
     Request(String),
+    #[error("Spotify Web API could not find an active playback device")]
+    PlaybackUnavailable,
 }
 
 impl CatalogError {
@@ -603,6 +609,13 @@ impl CatalogError {
             ureq::Error::StatusCode(403) => Self::Forbidden,
             ureq::Error::StatusCode(429) => Self::QuotaExceeded,
             error => Self::Request(error.to_string()),
+        }
+    }
+
+    fn from_playback_http(error: ureq::Error) -> Self {
+        match error {
+            ureq::Error::StatusCode(404) => Self::PlaybackUnavailable,
+            error => Self::from_http(error),
         }
     }
 }
@@ -966,6 +979,26 @@ mod tests {
         }
     }
 
+    struct MissingActiveDeviceSource;
+
+    impl CatalogSource for MissingActiveDeviceSource {
+        fn fetch(&mut self, request: &CatalogRequest) -> Result<CatalogPage, CatalogError> {
+            let CatalogRequest::Search(query) = request else {
+                return Err(CatalogError::InvalidRequest(
+                    "unexpected request".to_owned(),
+                ));
+            };
+            Ok(CatalogPage::Search {
+                query: query.clone(),
+                items: Vec::new(),
+            })
+        }
+
+        fn play(&mut self, _playback: &CatalogPlayback) -> Result<(), CatalogError> {
+            Err(CatalogError::PlaybackUnavailable)
+        }
+    }
+
     #[test]
     fn runtime_fetches_catalogue_off_the_ui_thread() {
         let runtime = CatalogRuntime::start_with_source(FakeSource).expect("runtime should start");
@@ -1020,6 +1053,43 @@ mod tests {
             .expect("playback request should be accepted");
 
         assert_eq!(play_rx.recv_timeout(Duration::from_secs(1)), Ok(playback));
+    }
+
+    #[test]
+    fn unavailable_web_api_device_falls_back_to_local_spotifyd_playback() {
+        assert!(matches!(
+            CatalogError::from_playback_http(ureq::Error::StatusCode(404)),
+            CatalogError::PlaybackUnavailable
+        ));
+
+        let runtime = CatalogRuntime::start_with_source(MissingActiveDeviceSource)
+            .expect("runtime should start");
+        runtime
+            .fetch(1, CatalogRequest::Search("shikari".to_owned()))
+            .expect("setup request should be accepted");
+        assert!(matches!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::Loaded { request_id: 1, .. }
+        ));
+        let playback = CatalogItem::new(
+            CatalogItemKind::Track,
+            "track",
+            "spotify:track:track",
+            "Track",
+            "Artist • Album",
+            None,
+        )
+        .with_playback_context("spotify:album:album")
+        .playback();
+
+        runtime
+            .play(playback.clone())
+            .expect("playback request should be accepted");
+
+        assert_eq!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::PlaybackFallback { playback }
+        );
     }
 
     #[test]
