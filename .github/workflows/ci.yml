@@ -144,6 +144,9 @@ jobs:
       - name: Test Homebrew formula renderer
         run: sh tests/render-homebrew-formula.sh
 
+      - name: Test release safety gates
+        run: sh tests/release-safety.sh
+
       - name: Lint shell scripts
         if: runner.os == 'Linux'
         run: shellcheck scripts/*.sh tests/*.sh

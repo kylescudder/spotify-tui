@@ -63,6 +63,11 @@ uses semantic versioning once public releases begin.
   unused `cava` dependency from Nix and Homebrew packaging.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,
   direct POSIX and PowerShell installers, checksums, and build provenance.
+- Bound public and per-platform release approvals to the exact Cargo package
+  version so a version bump automatically invalidates stale readiness state.
+- Made creation of the Homebrew tap update pull request a prerequisite for
+  publishing the GitHub release, preventing tap failures from leaving a
+  partially distributed public release.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified
   corresponding source and licence, safe config defaults, and user-level
   startup integration that starts the daemon during installation.

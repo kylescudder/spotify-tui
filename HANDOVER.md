@@ -215,9 +215,11 @@ The release infrastructure is implemented in this repository:
 - `.github/workflows/release.yml` accepts manual non-publishing rehearsals and
   semantic tags. It natively builds Linux x86_64/aarch64, macOS Intel/Apple
   Silicon, and Windows x86_64 artifacts, generates checksums, creates GitHub
-  provenance attestations, and publishes only after every packaging job passes.
-  `release-readiness.toml` additionally blocks public tags until live runtime
-  acceptance is explicitly recorded for all three platforms.
+  provenance attestations, and publishes only after every packaging job and the
+  Homebrew tap pull-request update pass. `release-readiness.toml` additionally
+  blocks public tags until the exact Cargo package version is explicitly
+  approved for public release and live runtime acceptance on all three
+  platforms; an old version's approvals cannot carry across a version bump.
 - `scripts/install.sh` provides the HTTPS-only `curl | sh` path for Linux/macOS;
   `scripts/install.ps1` provides the PowerShell path for Windows. Both select the
   matching release, support pinned versions and user-writable destinations,

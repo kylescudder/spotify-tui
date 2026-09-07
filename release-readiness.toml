@@ -1,7 +1,7 @@
 version = 1
-public_release = false
+public_release_version = ""
 
 [platforms]
-linux = true
-macos = false
-windows = false
+linux = "0.1.0"
+macos = ""
+windows = ""

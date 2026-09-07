@@ -17,6 +17,7 @@ test:
 infra-check:
 	sh -n scripts/*.sh tests/*.sh
 	sh tests/install-sh.sh
+	sh tests/release-safety.sh
 	sh tests/render-homebrew-formula.sh
 
 run:

@@ -72,10 +72,12 @@ without requiring elevated privileges.
 1. Update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md` for the intended semantic
    version.
 2. Complete the live product acceptance suite on every advertised platform, run
-   a successful manual release rehearsal, and set each platform plus
-   `public_release` to `true` in `release-readiness.toml`. This reviewed file is
-   the mechanical guard against publishing installable but non-functional
-   packages.
+   a successful manual release rehearsal, and record that exact package version
+   for `public_release_version` and every entry under `[platforms]` in
+   `release-readiness.toml`. For example, a fully accepted `0.1.0` release uses
+   `"0.1.0"` for all four values. Leave a value empty until that approval is
+   complete. Because approvals contain the package version instead of reusable
+   booleans, a later version bump automatically relocks every stale approval.
 3. Run `make check`. If Nix is available, also run `nix flake check` and
    `nix build`.
 4. Merge the release commit to `main` and confirm CI is green.
@@ -90,13 +92,16 @@ The tag workflow re-runs quality checks, performs native builds on all five
 targets, runs clean installer smoke tests on Linux, macOS, and Windows, builds
 and tests the Homebrew formula, validates Nix, and then:
 
+- opens a formula-update pull request against `kylescudder/homebrew-tap`;
 - creates GitHub provenance attestations for every release asset;
-- creates the GitHub release with generated notes;
-- opens a formula-update pull request against `kylescudder/homebrew-tap`.
+- creates the GitHub release with generated notes.
 
 Any architecture, installer, formula, or Nix failure blocks publication. The
-workflow never publishes a partial release. A tag also fails before building if
-`release-readiness.toml` has not been explicitly unlocked.
+tap branch and pull request must also be created successfully before the GitHub
+release becomes public, so a missing or expired tap token cannot leave a public
+release only partially distributed. A tag also fails before building unless
+every approval in `release-readiness.toml` matches the exact Cargo package
+version.
 
 ## Checksums and trust
 
