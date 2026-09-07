@@ -9,4 +9,5 @@ pub mod config;
 pub mod input;
 pub mod playback;
 pub mod playback_runtime;
+pub mod spotifyd_lifecycle;
 pub mod ui;

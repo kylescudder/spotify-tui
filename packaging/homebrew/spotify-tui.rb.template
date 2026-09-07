@@ -13,6 +13,12 @@ class SpotifyTui < Formula
     pkgshare.install "themes"
   end
 
+  service do
+    run [Formula["spotifyd"].opt_bin/"spotifyd", "--no-daemon"]
+    keep_alive true
+    process_type :background
+  end
+
   test do
     assert_match version.to_s, shell_output("#{bin}/spotify-tui --version")
   end

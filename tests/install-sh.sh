@@ -122,7 +122,7 @@ EOF
   grep -F "ExecStart=\"$test_root/service/bin/spotifyd\" --config-path \"$test_root/service/config/spotifyd.conf\" --no-daemon" \
     "$test_root/service/systemd/spotifyd.service" >/dev/null
   grep -F -- '--user daemon-reload' "$test_root/service-calls" >/dev/null
-  grep -F -- '--user enable spotifyd.service' "$test_root/service-calls" >/dev/null
+  grep -F -- '--user enable --now spotifyd.service' "$test_root/service-calls" >/dev/null
 else
   service_program="$test_root/fake-launchctl"
   cat > "$service_program" <<EOF

@@ -7,14 +7,11 @@ use std::{
 
 use thiserror::Error;
 
-pub const SPOTIFYD_PROGRAM_ENV: &str = "SPOTIFY_TUI_SPOTIFYD";
-pub const SPOTIFYD_CONFIG_ENV: &str = "SPOTIFY_TUI_SPOTIFYD_CONFIG";
-pub const SPOTIFYD_SERVICE_ENV: &str = "SPOTIFY_TUI_SPOTIFYD_SERVICE";
-pub const SYSTEMCTL_PROGRAM_ENV: &str = "SPOTIFY_TUI_SYSTEMCTL";
+use crate::spotifyd_lifecycle::SpotifydLifecycle;
+
+pub use crate::spotifyd_lifecycle::{SPOTIFYD_CONFIG_ENV, SPOTIFYD_PROGRAM_ENV};
 
 const DEFAULT_SPOTIFYD_PROGRAM: &str = "spotifyd";
-const DEFAULT_SPOTIFYD_SERVICE: &str = "spotifyd.service";
-const DEFAULT_SYSTEMCTL_PROGRAM: &str = "systemctl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthRequest {
@@ -87,37 +84,12 @@ impl AuthOutcome {
 
 pub fn authenticate(extra_arguments: &[OsString]) -> Result<AuthOutcome, AuthError> {
     AuthRequest::from_environment(extra_arguments)?.run()?;
-    let restart_warning = restart_user_service().err().map(|error| error.to_string());
+    let restart_warning = SpotifydLifecycle::from_environment()
+        .and_then(|lifecycle| lifecycle.restart())
+        .err()
+        .map(|error| error.to_string());
 
     Ok(AuthOutcome { restart_warning })
-}
-
-fn restart_user_service() -> Result<(), ServiceRestartError> {
-    let systemctl = optional_environment_value(SYSTEMCTL_PROGRAM_ENV)
-        .map_err(ServiceRestartError::Configuration)?
-        .unwrap_or_else(|| OsString::from(DEFAULT_SYSTEMCTL_PROGRAM));
-    let service = optional_environment_value(SPOTIFYD_SERVICE_ENV)
-        .map_err(ServiceRestartError::Configuration)?
-        .unwrap_or_else(|| OsString::from(DEFAULT_SPOTIFYD_SERVICE));
-    let output = Command::new(&systemctl)
-        .args([OsStr::new("--user"), OsStr::new("restart"), &service])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|source| ServiceRestartError::Launch {
-            program: systemctl.to_string_lossy().into_owned(),
-            source,
-        })?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    Err(ServiceRestartError::Unsuccessful {
-        service: service.to_string_lossy().into_owned(),
-        status: output.status,
-        detail,
-    })
 }
 
 fn optional_environment_value(name: &'static str) -> Result<Option<OsString>, AuthError> {
@@ -143,32 +115,6 @@ pub enum AuthError {
     },
     #[error("{program} authenticate exited with {status}")]
     Unsuccessful { program: String, status: ExitStatus },
-}
-
-#[derive(Debug, Error)]
-enum ServiceRestartError {
-    #[error(transparent)]
-    Configuration(#[from] AuthError),
-    #[error("could not start {program} to restart spotifyd: {source}")]
-    Launch {
-        program: String,
-        #[source]
-        source: io::Error,
-    },
-    #[error("could not restart {service} ({status}){detail_suffix}", detail_suffix = detail_suffix(.detail))]
-    Unsuccessful {
-        service: String,
-        status: ExitStatus,
-        detail: String,
-    },
-}
-
-fn detail_suffix(detail: &str) -> String {
-    if detail.is_empty() {
-        String::new()
-    } else {
-        format!(": {detail}")
-    }
 }
 
 #[cfg(test)]
@@ -200,11 +146,5 @@ mod tests {
                 OsString::from("9876"),
             ]
         );
-    }
-
-    #[test]
-    fn restart_error_includes_stderr_when_available() {
-        assert_eq!(detail_suffix("unit was not found"), ": unit was not found");
-        assert_eq!(detail_suffix(""), "");
     }
 }

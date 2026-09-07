@@ -36,8 +36,11 @@ nix profile install github:kylescudder/spotify-tui
 ```
 
 The flake exposes `packages.default`, `apps.default`, `checks`, a development
-shell, and a Home Manager module on `x86_64-linux` and `aarch64-linux`. A Home
-Manager configuration can consume it with:
+shell, and a Home Manager module on `x86_64-linux` and `aarch64-linux`. Both
+`nix run` and the installed application start Spotifyd automatically: they use
+an existing user service when available and otherwise create an on-demand
+transient systemd user service. A Home Manager configuration can consume it
+with:
 
 ```nix
 # flake.nix
@@ -56,9 +59,11 @@ Then import it from a Home Manager module where your flake inputs are available:
 }
 ```
 
-The module installs Spotify TUI and enables Spotifyd with session MPRIS. Set
+The module installs Spotify TUI and enables a persistent Spotifyd user service
+with session MPRIS, so it also starts at login. Set
 `programs.spotify-tui.enableSpotifyd = false` to preserve a separately managed
-Spotifyd service.
+Spotifyd service; Spotify TUI still verifies that daemon is running whenever it
+launches.
 
 ### Homebrew on macOS
 
@@ -69,9 +74,11 @@ Spotify TUI is published through the existing
 brew install kylescudder/tap/spotify-tui
 ```
 
-The formula depends on `spotifyd`. The release workflow styles, audits, builds,
-installs, and tests the formula on macOS before opening its tap update pull
-request.
+The formula depends on `spotifyd` and defines a Homebrew service for it. On its
+first launch, Spotify TUI registers and starts that service through
+`brew services`; subsequent launches reuse it. The release workflow styles,
+audits, builds, installs, and tests the formula on macOS before opening its tap
+update pull request.
 
 ### Direct installer on Linux or macOS
 
@@ -84,8 +91,8 @@ The installer detects the platform, downloads the matching release archive,
 checks it against `SHA256SUMS`, and installs Spotify TUI, its diagnostic, and a
 pinned Spotifyd runtime to `$HOME/.local/bin` without `sudo`. An existing
 Spotifyd binary or configuration is preserved. A new Linux installation gets a
-session-MPRIS configuration and an enabled systemd user service; macOS gets a
-user LaunchAgent.
+session-MPRIS configuration and a systemd user service that is enabled and
+started immediately; macOS gets a LaunchAgent that is bootstrapped immediately.
 
 The bundled Linux Spotifyd is dynamically linked to the normal ALSA/PulseAudio,
 D-Bus, OpenSSL, and system runtime libraries. The installer does not invoke a
@@ -126,7 +133,8 @@ The default destination is
 `%LOCALAPPDATA%\Programs\spotify-tui\bin`, which is added to the user PATH. The
 release archive contains Spotifyd built from the pinned upstream source with
 the portable Rodio backend. The installer preserves an existing Spotifyd,
-creates a minimal config when needed, and adds a user Startup entry.
+creates a minimal config when needed, adds a user Startup entry, and starts the
+daemon in the current session.
 The inspect-first, version-pinned form is:
 
 ```powershell
@@ -250,9 +258,10 @@ spotify-tui auth
 
 Spotifyd prints a browser URL. Open it, sign into Spotify, approve the
 connection, and return to the terminal. After successful authentication,
-Spotify TUI attempts to restart the `spotifyd.service` systemd user unit so the
-new credential is picked up immediately. Authentication remains successful if
-that restart is unavailable; a warning explains how to recover.
+Spotify TUI restarts the platform's managed Spotifyd process so the new
+credential is picked up immediately. Normal TUI startup and the `r` retry key
+also ensure the daemon is running; users do not need to start `spotifyd`
+themselves. A lifecycle failure is shown as an actionable TUI error.
 
 The disconnected, connecting, and error screens offer the same flow without
 leaving the application permanently:
@@ -277,13 +286,16 @@ the normal path or its generated configuration lives elsewhere:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SPOTIFY_TUI_SPOTIFYD` | `spotifyd` | Spotifyd executable or absolute path. |
-| `SPOTIFY_TUI_SPOTIFYD_CONFIG` | Unset | Config path passed to Spotifyd before the `authenticate` subcommand. |
-| `SPOTIFY_TUI_SPOTIFYD_SERVICE` | `spotifyd.service` | systemd user unit restarted after successful authentication. |
+| `SPOTIFY_TUI_SPOTIFYD_CONFIG` | Unset | Config path passed to Spotifyd for authentication and automatic daemon startup. |
+| `SPOTIFY_TUI_SPOTIFYD_SERVICE` | Platform default | systemd user unit or launchd label managed by the TUI. |
 | `SPOTIFY_TUI_SYSTEMCTL` | `systemctl` | `systemctl` executable or absolute path. |
+| `SPOTIFY_TUI_SYSTEMD_RUN` | `systemd-run` | Linux transient-user-service executable or absolute path. |
+| `SPOTIFY_TUI_LAUNCHCTL` | `launchctl` | macOS launchd controller executable or absolute path. |
+| `SPOTIFY_TUI_BREW` | `brew` | Homebrew executable used for formula service lifecycle. |
 
-Spotifyd also supports Spotify Connect discovery as an alternative: start the
-daemon and select its device from an official Spotify client on the same local
-network. This is optional on Linux: after authentication, Spotify TUI uses
+Spotifyd also supports Spotify Connect discovery as an alternative: select its
+device from an official Spotify client on the same local network. This is
+optional on Linux: after authentication, Spotify TUI uses
 Spotifyd's local D-Bus control interface to activate the device without a phone.
 If Spotify has a resumable context, press `Space` to continue it. To guarantee a
 specific context on a fresh session, configure `playback.startup_uri` as

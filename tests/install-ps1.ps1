@@ -101,7 +101,9 @@ try {
     }
 
     $startupDir = Join-Path $testRoot "startup"
+    $startLog = Join-Path $testRoot "spotifyd-started"
     $env:SPOTIFY_TUI_WINDOWS_STARTUP_DIR = $startupDir
+    $env:SPOTIFY_TUI_TEST_START_LOG = $startLog
     & (Join-Path $repositoryRoot "scripts/install.ps1") `
         -Repository "example/spotify-tui" `
         -ReleaseBaseUrl $releaseDir `
@@ -119,7 +121,19 @@ try {
     if ((Get-Content -Raw -LiteralPath $startupPath) -notmatch [regex]::Escape((Join-Path $configDir "spotifyd.conf"))) {
         throw "Spotifyd startup entry does not use the generated configuration."
     }
+    if ((Get-Content -Raw -LiteralPath $startupPath) -notmatch '--no-daemon') {
+        throw "Spotifyd startup entry does not keep the daemon attached to its managed process."
+    }
+    if (-not (Test-Path -LiteralPath $startLog -PathType Leaf)) {
+        throw "Installer did not start Spotifyd in the current session."
+    }
+    $startRecord = Get-Content -Raw -LiteralPath $startLog
+    if ($startRecord -notmatch [regex]::Escape((Join-Path $installDir "spotifyd.exe")) -or
+        $startRecord -notmatch [regex]::Escape((Join-Path $configDir "spotifyd.conf"))) {
+        throw "Installer started Spotifyd without the installed binary and generated configuration."
+    }
     Remove-Item Env:SPOTIFY_TUI_WINDOWS_STARTUP_DIR
+    Remove-Item Env:SPOTIFY_TUI_TEST_START_LOG
 
     Set-Content -LiteralPath (Join-Path $releaseDir "SHA256SUMS") -Value "$('0' * 64)  $artifact"
     $rejected = $false

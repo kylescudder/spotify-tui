@@ -122,3 +122,10 @@ unreviewed checksum directly to the tap's default branch.
 Do not merge or advertise the macOS formula as functionally complete until the
 macOS playback, service, and audio adapters pass the product acceptance suite.
 The same rule applies to the Windows installer and its native adapters.
+
+The clean-install rehearsal must also prove zero-command daemon startup: the
+Linux installer uses `systemctl --user enable --now`, the macOS installer
+bootstraps its LaunchAgent, the Homebrew formula service is registered by the
+first TUI launch, and the Windows installer creates its Startup entry and starts
+Spotifyd in the current session. No advertised path may require a user to run
+`spotifyd --no-daemon` manually.

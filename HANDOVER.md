@@ -39,6 +39,9 @@ Version 1 must provide:
 - First-run playback onboarding delegated to `spotifyd authenticate`; the TUI
   must never collect a password or inspect/store Spotifyd's playback
   credential.
+- Zero-command Spotifyd lifecycle: distribution routes install or expose the
+  daemon, persistent install routes add user startup integration, and every TUI
+  launch ensures Spotifyd is running without asking the user to start it.
 - Phone-free Linux session bootstrap: activate an authenticated Spotifyd over
   its local D-Bus control interface, preserving a resumable context or opening
   an optional configured startup Spotify URI.
@@ -63,6 +66,15 @@ Keep `PlaybackSource`, `ArtworkSource`, `CatalogSource`, and service lifecycle
 control platform-neutral. Platform adapters must produce the same normalized
 events and commands so `AppState` and the view contain no operating-system
 branches.
+
+`SpotifydLifecycle` is the service-management seam. Its small interface ensures
+the daemon is running or restarts it after authentication. Linux prefers the
+installed systemd user unit, falls back to a transient user unit for raw Nix
+and development launches, and finally uses a detached process where systemd is
+unavailable. macOS prefers launchd, registers the Homebrew formula service when
+needed, and has the same detached fallback. Windows uses its installed Startup
+entry and a detached process fallback. Lifecycle failures are recoverable from
+the TUI's retry action and never instruct the user to run Spotifyd manually.
 
 On Linux, use the session MPRIS interface exposed by `spotifyd` as the source of
 truth for playback state and controls. The existing config already sets:
@@ -188,7 +200,10 @@ The release infrastructure is implemented in this repository:
   permissions.
 - `flake.nix` and `flake.lock` expose the Linux package, app, checks,
   development shell, and `nix/home-manager-module.nix`. The package wraps
-  `spotifyd` onto `PATH` without changing an existing Spotifyd config.
+  `spotifyd` and systemd tools onto `PATH`, pins the daemon executable for the
+  lifecycle adapter, and leaves an existing Spotifyd config unchanged. Raw Nix
+  launches get an on-demand transient user unit; Home Manager provides the
+  persistent login service.
 - `.github/workflows/release.yml` accepts manual non-publishing rehearsals and
   semantic tags. It natively builds Linux x86_64/aarch64, macOS Intel/Apple
   Silicon, and Windows x86_64 artifacts, generates checksums, creates GitHub
@@ -199,17 +214,19 @@ The release infrastructure is implemented in this repository:
   `scripts/install.ps1` provides the PowerShell path for Windows. Both select the
   matching release, support pinned versions and user-writable destinations,
   verify SHA-256 before replacing binaries, preserve existing dependencies and
-  configuration, install a pinned bundled Spotifyd when necessary, and create
-  platform user-startup definitions. Install, upgrade, dependency opt-out,
-  service, invalid-version, and tampered-artifact paths have offline tests.
+  configuration, install a pinned bundled Spotifyd when necessary, create
+  platform user-startup definitions, and start them in the installation
+  session. Install, upgrade, dependency opt-out, service, invalid-version, and
+  tampered-artifact paths have offline tests.
 - Direct archives include Spotifyd's GPLv3 licence and publish its complete
   corresponding 0.4.2 source beside the binaries. Linux consumes hash-pinned
   upstream MPRIS builds; macOS and Windows build the portable Rodio backend from
   pinned upstream commit `c5b94367014856a8c541dea565cbd332e034fb9e`.
 - `packaging/homebrew/spotify-tui.rb.template` is rendered with the tagged source
-  checksum, styled, audited, installed, and tested on macOS. A successful tag
-  opens a reviewable formula pull request in `kylescudder/homebrew-tap`; it never
-  pushes an unreviewed checksum to the tap's default branch.
+  checksum and defines the Spotifyd service used by the lifecycle adapter. It is
+  styled, audited, installed, and tested on macOS. A successful tag opens a
+  reviewable formula pull request in `kylescudder/homebrew-tap`; it never pushes
+  an unreviewed checksum to the tap's default branch.
 - `LICENSE`, `CHANGELOG.md`, the README installation/verification instructions,
   and `docs/releasing.md` complete the operator-facing release surface.
 
@@ -270,10 +287,8 @@ longer open implementation tasks.
    - Prototype non-Web-API playback/control transports against Spotifyd on each
      platform, record the selected designs, and implement them behind
      `PlaybackSource`.
-   - Refactor post-authentication service restart behind a platform seam; keep
-     the current systemd user-service controller on Linux and add a tested
-     `brew services`/launchd controller on macOS plus an appropriate Windows
-     process/service controller.
+   - Live-test the implemented launchd/Homebrew and Windows lifecycle adapters
+     alongside the new playback adapters.
    - Verify both Apple Silicon and Intel builds in CI; functional validation on
      real hardware is required for every architecture advertised by the formula.
    - Verify the Windows x86_64 build in CI and on a clean Windows machine before

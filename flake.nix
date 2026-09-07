@@ -31,7 +31,8 @@
           postInstall = ''
             install -Dm644 themes/*.toml -t $out/share/spotify-tui/themes
             wrapProgram $out/bin/spotify-tui \
-              --prefix PATH : ${nixpkgs.lib.makeBinPath [ pkgs.spotifyd ]}
+              --prefix PATH : ${nixpkgs.lib.makeBinPath [ pkgs.spotifyd pkgs.systemd ]} \
+              --set-default SPOTIFY_TUI_SPOTIFYD ${pkgs.spotifyd}/bin/spotifyd
           '';
 
           meta = {

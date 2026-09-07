@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     env,
     error::Error,
     ffi::OsString,
@@ -25,6 +26,7 @@ use spotify_tui::{
     input,
     playback::PlaybackCommand,
     playback_runtime::{PlaybackEvent, PlaybackRuntime},
+    spotifyd_lifecycle::SpotifydLifecycle,
     ui,
 };
 
@@ -93,6 +95,11 @@ fn run_catalog_auth_command() -> Result<(), Box<dyn Error>> {
 fn run_tui_app() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
     let mut app = AppState::default();
+    let lifecycle = SpotifydLifecycle::from_environment()?;
+    let lifecycle_error = lifecycle
+        .ensure_running()
+        .err()
+        .map(|error| error.to_string());
     let playback = PlaybackRuntime::start(config.startup_uri().map(str::to_owned))?;
     let artwork = ArtworkRuntime::start()?;
     let catalog = config
@@ -100,22 +107,23 @@ fn run_tui_app() -> Result<(), Box<dyn Error>> {
         .cloned()
         .map(CatalogRuntime::start)
         .transpose()?;
+    let services = RuntimeServices {
+        playback: &playback,
+        artwork: &artwork,
+        catalog: catalog.as_ref(),
+        lifecycle: &lifecycle,
+        lifecycle_error: RefCell::new(lifecycle_error),
+    };
 
     loop {
-        match run_tui_session(
-            &mut app,
-            config.theme(),
-            &playback,
-            &artwork,
-            catalog.as_ref(),
-        )? {
+        match run_tui_session(&mut app, config.theme(), &services)? {
             SessionOutcome::Quit => return Ok(()),
             SessionOutcome::Authenticate => {
                 println!("Starting Spotifyd authentication…");
                 match auth::authenticate(&[]) {
                     Ok(outcome) => {
                         apply_auth_outcome(&mut app, &outcome);
-                        reconnect(&mut app, &playback);
+                        reconnect(&mut app, &services);
                     }
                     Err(error) => app.reduce(AppEvent::PlaybackFailed(format!(
                         "authentication failed: {error}"
@@ -140,16 +148,22 @@ fn report_restart_warning(outcome: &AuthOutcome) {
     if let Some(warning) = outcome.restart_warning() {
         eprintln!("warning: signed in, but spotifyd did not restart: {warning}");
     } else {
-        println!("Restarted the spotifyd user service.");
+        println!("Spotifyd is running with the new authentication.");
     }
+}
+
+struct RuntimeServices<'a> {
+    playback: &'a PlaybackRuntime,
+    artwork: &'a ArtworkRuntime,
+    catalog: Option<&'a CatalogRuntime>,
+    lifecycle: &'a SpotifydLifecycle,
+    lifecycle_error: RefCell<Option<String>>,
 }
 
 fn run_tui_session(
     app: &mut AppState,
     theme: &Theme,
-    playback: &PlaybackRuntime,
-    artwork: &ArtworkRuntime,
-    catalog: Option<&CatalogRuntime>,
+    services: &RuntimeServices<'_>,
 ) -> io::Result<SessionOutcome> {
     let mut terminal = start_terminal()?;
     let mut artwork_renderer = match ArtworkRenderer::detect(theme) {
@@ -159,15 +173,7 @@ fn run_tui_session(
             return Err(error);
         }
     };
-    let result = run(
-        &mut terminal,
-        app,
-        theme,
-        playback,
-        artwork,
-        catalog,
-        &mut artwork_renderer,
-    );
+    let result = run(&mut terminal, app, theme, services, &mut artwork_renderer);
     let restore_result = restore_terminal(&mut terminal);
 
     match result {
@@ -207,16 +213,14 @@ fn run(
     terminal: &mut Tui,
     app: &mut AppState,
     theme: &Theme,
-    playback: &PlaybackRuntime,
-    artwork: &ArtworkRuntime,
-    catalog: Option<&CatalogRuntime>,
+    services: &RuntimeServices<'_>,
     artwork_renderer: &mut ArtworkRenderer,
 ) -> io::Result<SessionOutcome> {
     loop {
-        drain_playback_events(app, playback, artwork);
-        drain_catalog_events(app, catalog);
-        sync_catalog_artwork(app, artwork);
-        drain_artwork_events(app, artwork);
+        drain_playback_events(app, services);
+        drain_catalog_events(app, services.catalog);
+        sync_catalog_artwork(app, services.artwork);
+        drain_artwork_events(app, services.artwork);
         if app.browser().mode() == BrowserMode::Closed {
             artwork_renderer.sync(app.track_revision(), app.artwork());
         } else {
@@ -237,17 +241,17 @@ fn run(
                         return Ok(SessionOutcome::Quit);
                     }
                     BrowserEffect::Play(uri) => {
-                        dispatch(app, playback, PlaybackCommand::OpenUri(uri));
+                        dispatch(app, services.playback, PlaybackCommand::OpenUri(uri));
                     }
                     BrowserEffect::PlayTrack(target) => {
-                        if let Some(catalog) = catalog {
+                        if let Some(catalog) = services.catalog {
                             if let Err(error) = catalog.play(target) {
                                 app.reduce(AppEvent::PlaybackFailed(error.to_string()));
                             }
                         } else {
                             dispatch(
                                 app,
-                                playback,
+                                services.playback,
                                 PlaybackCommand::OpenUri(target.uri().to_owned()),
                             );
                         }
@@ -256,7 +260,7 @@ fn run(
                         request_id,
                         request,
                     } => {
-                        if let Some(catalog) = catalog {
+                        if let Some(catalog) = services.catalog {
                             if let Err(error) = catalog.fetch(request_id, request) {
                                 app.browser_mut().resolve(CatalogEvent::Failed {
                                     request_id,
@@ -287,15 +291,15 @@ fn run(
                     return Ok(SessionOutcome::Quit);
                 }
                 Command::Authenticate => return Ok(SessionOutcome::Authenticate),
-                Command::RetryConnection => reconnect(app, playback),
+                Command::RetryConnection => reconnect(app, services),
                 Command::TogglePlayback => {
-                    dispatch(app, playback, PlaybackCommand::Toggle);
+                    dispatch(app, services.playback, PlaybackCommand::Toggle);
                 }
                 Command::PreviousTrack => {
-                    dispatch(app, playback, PlaybackCommand::Previous);
+                    dispatch(app, services.playback, PlaybackCommand::Previous);
                 }
                 Command::NextTrack => {
-                    dispatch(app, playback, PlaybackCommand::Next);
+                    dispatch(app, services.playback, PlaybackCommand::Next);
                 }
                 Command::Seek { direction, amount } => {
                     let amount = i64::try_from(amount.as_micros()).unwrap_or(i64::MAX);
@@ -303,13 +307,13 @@ fn run(
                         spotify_tui::app::SeekDirection::Backward => -amount,
                         spotify_tui::app::SeekDirection::Forward => amount,
                     };
-                    dispatch(app, playback, PlaybackCommand::SeekBy(offset));
+                    dispatch(app, services.playback, PlaybackCommand::SeekBy(offset));
                 }
                 Command::AdjustVolume(amount) => {
                     if let Some(current) = app.playback().map(|state| state.volume()) {
                         dispatch(
                             app,
-                            playback,
+                            services.playback,
                             PlaybackCommand::SetVolume((current + amount).clamp(0.0, 1.0)),
                         );
                     }
@@ -332,11 +336,12 @@ fn input_poll_interval(app: &AppState, artwork_renderer: &ArtworkRenderer) -> Du
     }
 }
 
-fn drain_playback_events(app: &mut AppState, playback: &PlaybackRuntime, artwork: &ArtworkRuntime) {
-    while let Some(event) = playback.try_event() {
+fn drain_playback_events(app: &mut AppState, services: &RuntimeServices<'_>) {
+    while let Some(event) = services.playback.try_event() {
         match event {
             PlaybackEvent::Connecting => app.reduce(AppEvent::ConnectionPending),
             PlaybackEvent::Updated(snapshot) => {
+                services.lifecycle_error.borrow_mut().take();
                 let previous_revision = app.track_revision();
                 let art_url = snapshot.track.art_url.clone();
                 app.reduce(AppEvent::PlaybackUpdated {
@@ -345,8 +350,9 @@ fn drain_playback_events(app: &mut AppState, playback: &PlaybackRuntime, artwork
                 });
                 if app.track_revision() != previous_revision
                     && let Some(url) = art_url
-                    && let Err(error) =
-                        artwork.load(ArtworkTarget::Playback(app.track_revision()), url)
+                    && let Err(error) = services
+                        .artwork
+                        .load(ArtworkTarget::Playback(app.track_revision()), url)
                 {
                     app.reduce(AppEvent::ArtworkFailed {
                         track_revision: app.track_revision(),
@@ -354,7 +360,13 @@ fn drain_playback_events(app: &mut AppState, playback: &PlaybackRuntime, artwork
                     });
                 }
             }
-            PlaybackEvent::Disconnected => app.reduce(AppEvent::PlaybackDisconnected),
+            PlaybackEvent::Disconnected => {
+                if let Some(message) = services.lifecycle_error.borrow().clone() {
+                    app.reduce(AppEvent::PlaybackFailed(message));
+                } else {
+                    app.reduce(AppEvent::PlaybackDisconnected);
+                }
+            }
             PlaybackEvent::Failed(message) => app.reduce(AppEvent::PlaybackFailed(message)),
         }
     }
@@ -430,9 +442,20 @@ fn drain_catalog_events(app: &mut AppState, catalog: Option<&CatalogRuntime>) {
     }
 }
 
-fn reconnect(app: &mut AppState, playback: &PlaybackRuntime) {
+fn reconnect(app: &mut AppState, services: &RuntimeServices<'_>) {
     app.reduce(AppEvent::ConnectionPending);
-    if let Err(error) = playback.reconnect() {
+    match services.lifecycle.ensure_running() {
+        Ok(()) => {
+            services.lifecycle_error.borrow_mut().take();
+        }
+        Err(error) => {
+            let message = error.to_string();
+            services.lifecycle_error.replace(Some(message.clone()));
+            app.reduce(AppEvent::PlaybackFailed(message));
+            return;
+        }
+    }
+    if let Err(error) = services.playback.reconnect() {
         app.reduce(AppEvent::PlaybackFailed(error.to_string()));
     }
 }

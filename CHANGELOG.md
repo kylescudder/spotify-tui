@@ -9,6 +9,9 @@ uses semantic versioning once public releases begin.
 - Phone-free Linux startup through Spotifyd's local D-Bus transfer control,
   including automatic recovery after daemon restarts and an optional configured
   startup Spotify URI.
+- Automatic cross-platform Spotifyd lifecycle management on TUI launch, retry,
+  and post-authentication restart, with Linux systemd/transient-unit, macOS
+  launchd/Homebrew, Windows process, and detached fallback adapters.
 - Linux Spotifyd MPRIS diagnostic and delegated Spotifyd authentication flow.
 - Discovery of Spotifyd's process-unique MPRIS bus name, with compatibility for
   the legacy fixed name.
@@ -53,4 +56,6 @@ uses semantic versioning once public releases begin.
   direct POSIX and PowerShell installers, checksums, and build provenance.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified
   corresponding source and licence, safe config defaults, and user-level
-  startup integration.
+  startup integration that starts the daemon during installation.
+- A Homebrew Spotifyd service and Nix wrapper support for zero-command daemon
+  startup outside Home Manager.

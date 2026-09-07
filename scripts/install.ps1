@@ -15,6 +15,35 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Start-SpotifydForCurrentSession {
+    param(
+        [Parameter(Mandatory)][string]$Program,
+        [Parameter(Mandatory)][string]$Configuration
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($env:SPOTIFY_TUI_TEST_START_LOG)) {
+        [System.IO.File]::WriteAllLines(
+            $env:SPOTIFY_TUI_TEST_START_LOG,
+            @($Program, $Configuration),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        return
+    }
+    if ($null -ne (Get-Process -Name "spotifyd" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        Write-Host "Spotifyd is already running."
+        return
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Program
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $escapedConfiguration = $Configuration.Replace('"', '\"')
+    $startInfo.Arguments = "--config-path `"$escapedConfiguration`" --no-daemon"
+    [System.Diagnostics.Process]::Start($startInfo) | Out-Null
+    Write-Host "Started Spotifyd for the current session."
+}
+
 if ($NoDependencies -and $ForceDependencies) {
     throw "-NoDependencies and -ForceDependencies cannot be used together."
 }
@@ -178,7 +207,7 @@ initial_volume = 90
             $env:SPOTIFY_TUI_WINDOWS_STARTUP_DIR
         }
         if ([string]::IsNullOrWhiteSpace($startupDir)) {
-            Write-Warning "Could not determine the user Startup directory; run spotifyd.exe manually."
+            Write-Warning "Could not determine the user Startup directory; Spotify TUI will start Spotifyd automatically when it launches."
         } else {
             New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
             $startupPath = Join-Path $startupDir "spotifyd.cmd"
@@ -187,7 +216,7 @@ initial_volume = 90
                 $escapedConfigPath = $configPath.Replace("%", "%%")
                 [System.IO.File]::WriteAllText(
                     $startupPath,
-                    "@start `"`" `"$escapedSpotifydPath`" --config-path `"$escapedConfigPath`"" + [Environment]::NewLine,
+                    "@start `"`" `"$escapedSpotifydPath`" --config-path `"$escapedConfigPath`" --no-daemon" + [Environment]::NewLine,
                     [System.Text.UTF8Encoding]::new($false)
                 )
                 Write-Host "Created Spotifyd user startup entry at $startupPath"
@@ -195,6 +224,7 @@ initial_volume = 90
                 Write-Host "Preserved existing Spotifyd user startup entry at $startupPath"
             }
         }
+        Start-SpotifydForCurrentSession -Program $spotifydPath -Configuration $configPath
     }
 
     if (-not $NoModifyPath) {

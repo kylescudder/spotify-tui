@@ -331,14 +331,13 @@ EOF
     fi
     if command -v "$systemctl_program" >/dev/null 2>&1; then
       if "$systemctl_program" --user daemon-reload >/dev/null 2>&1 \
-        && "$systemctl_program" --user enable spotifyd.service >/dev/null 2>&1; then
-        echo "Enabled spotifyd.service; spotify-tui auth will start or restart it."
+        && "$systemctl_program" --user enable --now spotifyd.service >/dev/null 2>&1; then
+        echo "Enabled and started spotifyd.service."
       else
-        echo "Could not enable spotifyd.service in this session; enable it later with:"
-        echo "  $systemctl_program --user enable spotifyd.service"
+        echo "Could not start spotifyd.service during installation; Spotify TUI will retry automatically when it launches."
       fi
     else
-      echo "systemctl was not found; run Spotifyd manually with: $spotifyd_path --no-daemon"
+      echo "systemctl was not found; Spotify TUI will start Spotifyd automatically when it launches."
     fi
   else
     launchctl_program=${SPOTIFY_TUI_LAUNCHCTL:-launchctl}
@@ -376,13 +375,13 @@ EOF
       launch_domain="gui/$(id -u)"
       if "$launchctl_program" print "$launch_domain/$service_label" >/dev/null 2>&1; then
         "$launchctl_program" kickstart -k "$launch_domain/$service_label" >/dev/null 2>&1 \
-          || echo "Could not restart the Spotifyd launch agent in this session."
+          || echo "Could not restart the Spotifyd launch agent; Spotify TUI will retry automatically when it launches."
       else
         "$launchctl_program" bootstrap "$launch_domain" "$service_path" >/dev/null 2>&1 \
-          || echo "Could not start the Spotifyd launch agent in this session."
+          || echo "Could not start the Spotifyd launch agent; Spotify TUI will retry automatically when it launches."
       fi
     else
-      echo "launchctl was not found; run Spotifyd manually with: $spotifyd_path --no-daemon"
+      echo "launchctl was not found; Spotify TUI will start Spotifyd automatically when it launches."
     fi
   fi
 fi
