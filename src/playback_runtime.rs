@@ -601,7 +601,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn runtime_rediscovers_mpris_after_a_process_unique_name_changes() {
+    fn runtime_tolerates_missing_position_and_rediscovers_mpris_after_restart() {
         use std::{
             collections::HashMap,
             fs,
@@ -725,8 +725,10 @@ mod tests {
             }
 
             #[zbus(property)]
-            fn position(&self) -> i64 {
-                0
+            fn position(&self) -> zbus::fdo::Result<i64> {
+                Err(zbus::fdo::Error::Failed(
+                    "no position available currently".to_owned(),
+                ))
             }
 
             #[zbus(property)]
@@ -786,7 +788,11 @@ mod tests {
                     .await
                     .expect("initial mock controls should start"),
             );
-            let mut mpris = None;
+            let mut mpris = Some(
+                start_mpris(&address, 100)
+                    .await
+                    .expect("initial mock player should start"),
+            );
             let source = MprisPlaybackSource::connect_to_address(address.clone()).await?;
             tokio::spawn(async move {
                 loop {

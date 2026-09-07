@@ -16,6 +16,8 @@ uses semantic versioning once public releases begin.
   reconnection, and play/pause, track, seek, and volume controls in the TUI.
 - Fixed a restart race that could miss Spotifyd's MPRIS name disappearing and
   leave the playback supervisor waiting on the terminated player indefinitely.
+- Treat Spotifyd's transient "no position available currently" MPRIS response
+  as position zero instead of discarding otherwise valid playback state.
 - Made the private D-Bus restart regression test use its own temporary socket
   and session configuration so it runs deterministically in Nix build sandboxes.
 - A live now-playing view with track metadata, interpolated progress, playback

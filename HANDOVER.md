@@ -76,6 +76,9 @@ rather than assuming either literal value.
 
 Read properties and subscribe to D-Bus change signals instead of polling on a
 short timer. Interpolate progress locally between authoritative position updates.
+Spotifyd may transiently reject `Position` while an empty session activates;
+treat that single property as zero without discarding valid playback status,
+metadata, or volume.
 Treat reconnecting to MPRIS as normal runtime behavior: `spotifyd` may start,
 stop, or temporarily disappear while the TUI remains open.
 

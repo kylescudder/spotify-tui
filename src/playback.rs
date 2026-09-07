@@ -235,13 +235,19 @@ impl PlaybackSource for MprisPlaybackSource {
     async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
         let player = self.player().await?;
 
-        let (status, metadata, position, volume) = tokio::try_join!(
+        let (status, metadata, position, volume) = tokio::join!(
             player.playback_status(),
             player.metadata(),
             player.position(),
             player.volume(),
-        )
-        .map_err(mpris_error)?;
+        );
+        let status = status.map_err(mpris_error)?;
+        let metadata = metadata.map_err(mpris_error)?;
+        // Spotifyd can expose a usable player before its session has a current
+        // track position. Keep the valid state and begin at zero until the next
+        // property or Seeked signal supplies an authoritative position.
+        let position = position.unwrap_or_default();
+        let volume = volume.map_err(mpris_error)?;
 
         Ok(PlaybackSnapshot {
             status: status.into(),

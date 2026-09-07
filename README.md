@@ -185,6 +185,9 @@ comes back. When Spotifyd is running but inactive, the TUI asks Spotifyd to
 transfer playback to itself automatically. An official Spotify client or phone
 is not required to activate the device. This uses Spotifyd's documented
 [`TransferPlayback` D-Bus control](https://docs.spotifyd.rs/advanced/dbus.html).
+Spotifyd can briefly report that no MPRIS position exists while an empty or new
+session activates; Spotify TUI treats that as position zero and remains
+connected until real progress arrives.
 
 Album artwork is loaded directly from the `mpris:artUrl` supplied by Spotifyd;
 it does not use the Spotify Web API. Downloads and image decoding run off the
@@ -286,6 +289,8 @@ complete.
 Catalogue access is optional. Without it, the local now-playing screen and all
 playback controls continue to work. Once configured, press `/`, type a query,
 and press `Enter`. Results include artists, albums, tracks, and playlists.
+This is also the phone-free way to choose the first content in a Spotify session
+that has no resumable context.
 
 - `j`/`k` or the arrow keys move through results.
 - `Enter` opens an artist or album, or starts a selected track or playlist.
@@ -311,6 +316,9 @@ ID. No client secret is used or stored.
    [spotify_api]
    client_id = "your-client-id"
    ```
+
+   Merge this section into an existing config; do not replace its `[playback]`
+   or `[themes.*]` sections.
 
 4. Authenticate catalogue access once:
 

@@ -511,7 +511,7 @@ fn help_text(state: &AppState) -> &'static str {
     match state.connection() {
         ConnectionState::Connected => "Space play/pause / q quit",
         ConnectionState::Connecting | ConnectionState::Disconnected | ConnectionState::Error(_) => {
-            "a auth / r retry / q quit"
+            "/ search / a auth / r retry / q quit"
         }
     }
 }
@@ -602,6 +602,22 @@ background = "#010203"
         assert_eq!(top_left.fg, Color::Rgb(0x10, 0x20, 0x30));
         assert_eq!(title.fg, Color::Rgb(0x40, 0x50, 0x60));
         assert_eq!(body.bg, Color::Rgb(0x01, 0x02, 0x03));
+    }
+
+    #[test]
+    fn connection_screen_keeps_phone_free_search_discoverable() {
+        let state = AppState::default();
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+        let mut terminal =
+            Terminal::new(TestBackend::new(60, 12)).expect("test backend is infallible");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        assert!(rendered_text(&terminal).contains("/ search"));
     }
 
     #[test]
