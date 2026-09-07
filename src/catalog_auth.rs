@@ -4,6 +4,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -47,17 +48,40 @@ struct AuthorizationRequest {
 }
 
 pub fn authenticate(config: &SpotifyApiConfig) -> Result<PathBuf, CatalogAuthError> {
+    authenticate_with(config, None, |url| {
+        println!("Browse to: {url}");
+        if let Err(error) = launch_browser(url.as_str()) {
+            eprintln!("warning: could not open a browser automatically: {error}");
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn authenticate_from_tui(
+    config: &SpotifyApiConfig,
+    cancelled: &AtomicBool,
+) -> Result<PathBuf, CatalogAuthError> {
+    authenticate_with(config, Some(cancelled), |url| {
+        launch_browser(url.as_str()).map_err(|source| CatalogAuthError::OpenBrowser {
+            url: url.to_string(),
+            source,
+        })
+    })
+}
+
+fn authenticate_with(
+    config: &SpotifyApiConfig,
+    cancelled: Option<&AtomicBool>,
+    present: impl FnOnce(&Url) -> Result<(), CatalogAuthError>,
+) -> Result<PathBuf, CatalogAuthError> {
     let redirect = Url::parse(config.redirect_uri())
         .map_err(|_| CatalogAuthError::InvalidRedirectUri(config.redirect_uri().to_owned()))?;
     let listener = bind_callback(&redirect)?;
     let request = authorization_request(config, &redirect)?;
 
-    println!("Browse to: {}", request.url);
-    if let Err(error) = launch_browser(request.url.as_str()) {
-        eprintln!("warning: could not open a browser automatically: {error}");
-    }
+    present(&request.url)?;
 
-    let code = wait_for_callback(&listener, &redirect, &request.state)?;
+    let code = wait_for_callback(&listener, &redirect, &request.state, cancelled)?;
     let agent = spotify_agent();
     let token = exchange_code(config, &code, &request.verifier, &agent)?;
     let path = token_cache_path(config)?;
@@ -101,7 +125,10 @@ pub(crate) fn refresh_token(
             ("refresh_token", current.refresh_token.as_str()),
             ("client_id", config.client_id()),
         ])
-        .map_err(|error| CatalogAuthError::TokenRequest(error.to_string()))?;
+        .map_err(|error| match error {
+            ureq::Error::StatusCode(400 | 401) => CatalogAuthError::AuthorizationExpired,
+            error => CatalogAuthError::TokenRequest(error.to_string()),
+        })?;
     let response: TokenResponse = response
         .body_mut()
         .read_json()
@@ -167,9 +194,13 @@ fn wait_for_callback(
     listener: &TcpListener,
     redirect: &Url,
     expected_state: &str,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<String, CatalogAuthError> {
     let deadline = Instant::now() + AUTH_TIMEOUT;
     loop {
+        if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
+            return Err(CatalogAuthError::AuthenticationCancelled);
+        }
         match listener.accept() {
             Ok((mut stream, _)) => {
                 stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -407,6 +438,12 @@ pub enum CatalogAuthError {
     InvalidRedirectUri(String),
     #[error("could not generate secure OAuth state: {0}")]
     Random(String),
+    #[error("could not open Spotify authorization automatically; open {url}: {source}")]
+    OpenBrowser {
+        url: String,
+        #[source]
+        source: io::Error,
+    },
     #[error("could not listen for Spotify authentication on {address}: {source}")]
     Bind {
         address: SocketAddr,
@@ -415,6 +452,8 @@ pub enum CatalogAuthError {
     },
     #[error("Spotify authentication timed out after five minutes")]
     CallbackTimeout,
+    #[error("Spotify catalogue authentication was cancelled")]
+    AuthenticationCancelled,
     #[error("could not receive Spotify authentication callback: {0}")]
     Callback(#[from] io::Error),
     #[error("Spotify returned an invalid authentication callback")]
@@ -423,6 +462,8 @@ pub enum CatalogAuthError {
     StateMismatch,
     #[error("Spotify authentication was denied: {0}")]
     AuthorizationDenied(String),
+    #[error("Spotify catalogue authorization has expired")]
+    AuthorizationExpired,
     #[error("Spotify token request failed: {0}")]
     TokenRequest(String),
     #[error("Spotify returned an invalid token response: {0}")]
@@ -431,7 +472,7 @@ pub enum CatalogAuthError {
     MissingRefreshToken,
     #[error("could not determine a directory for the Spotify token cache")]
     NoStateDirectory,
-    #[error("Spotify catalogue is not authenticated; run spotify-tui catalog-auth (expected token at {})", .0.display())]
+    #[error("Spotify catalogue sign-in is required (expected token at {})", .0.display())]
     NotAuthenticated(PathBuf),
     #[error("could not read Spotify token cache {}: {source}", path.display())]
     ReadToken {
@@ -439,7 +480,7 @@ pub enum CatalogAuthError {
         #[source]
         source: io::Error,
     },
-    #[error("could not parse Spotify token cache {}: {source}; remove it and run spotify-tui catalog-auth again", path.display())]
+    #[error("could not parse Spotify token cache {}: {source}", path.display())]
     ParseToken {
         path: PathBuf,
         #[source]
@@ -457,6 +498,15 @@ pub enum CatalogAuthError {
         #[source]
         source: serde_json::Error,
     },
+}
+
+impl CatalogAuthError {
+    pub(crate) const fn requires_authentication(&self) -> bool {
+        matches!(
+            self,
+            Self::AuthorizationExpired | Self::NotAuthenticated(_) | Self::ParseToken { .. }
+        )
+    }
 }
 
 #[cfg(test)]
@@ -529,6 +579,43 @@ redirect_uri = "http://127.0.0.1:8989/callback"
             ),
             Err(CatalogAuthError::StateMismatch)
         ));
+    }
+
+    #[test]
+    fn callback_wait_stops_when_the_tui_closes() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("test listener should be nonblocking");
+        let cancelled = AtomicBool::new(true);
+        let redirect =
+            Url::parse("http://127.0.0.1:8989/callback").expect("test redirect should parse");
+
+        assert!(matches!(
+            wait_for_callback(&listener, &redirect, "state", Some(&cancelled)),
+            Err(CatalogAuthError::AuthenticationCancelled)
+        ));
+    }
+
+    #[test]
+    fn missing_expired_and_corrupt_tokens_trigger_interactive_authentication() {
+        assert!(
+            CatalogAuthError::NotAuthenticated(PathBuf::from("token.json"))
+                .requires_authentication()
+        );
+        assert!(CatalogAuthError::AuthorizationExpired.requires_authentication());
+        assert!(
+            CatalogAuthError::ParseToken {
+                path: PathBuf::from("token.json"),
+                source: serde_json::from_str::<StoredToken>("not-json")
+                    .expect_err("fixture should be invalid"),
+            }
+            .requires_authentication()
+        );
+        assert!(
+            !CatalogAuthError::AuthorizationDenied("access_denied".to_owned())
+                .requires_authentication()
+        );
     }
 
     #[cfg(unix)]

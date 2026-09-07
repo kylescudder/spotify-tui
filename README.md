@@ -320,19 +320,22 @@ ID. No client secret is used or stored.
    Merge this section into an existing config; do not replace its `[playback]`
    or `[themes.*]` sections.
 
-4. Authenticate catalogue access once:
+4. Start the TUI, press `/`, enter a search, and press `Enter`:
 
    ```bash
-   spotify-tui catalog-auth
+   spotify-tui
    ```
 
-The command opens Spotify's browser approval page and uses Authorization Code
-with PKCE over the loopback redirect. It stores the resulting Web API access
-and refresh token at
+The first search automatically opens Spotify's browser approval page. The TUI
+keeps running while Authorization Code with PKCE completes over the loopback
+redirect, then continues the original search without another command or
+restart. It stores the resulting Web API access and refresh token at
 `$XDG_STATE_HOME/spotify-tui/spotify-api-token.json`, or
 `$HOME/.local/state/spotify-tui/spotify-api-token.json` when
 `XDG_STATE_HOME` is unset. The cache is created with owner-only permissions on
-Unix. Tokens refresh automatically.
+Unix. Tokens refresh automatically; a missing, corrupt, or expired
+authorization starts the browser flow again. `spotify-tui catalog-auth` remains
+available for scripts and troubleshooting but is not part of normal use.
 
 Spotify Development Mode currently limits an app to five explicitly allowlisted
 users and requires the app owner to have Spotify Premium. Add every intended
@@ -426,7 +429,8 @@ token_cache = "/home/alice/.local/state/spotify-tui/catalog-token.json"
 
 The redirect URI in the config and Spotify dashboard must match exactly. After
 changing `client_id`, `redirect_uri`, or `token_cache`, run
-`spotify-tui catalog-auth` again.
+`spotify-tui catalog-auth` once or remove the old token cache; the next search
+will otherwise authenticate automatically when it finds no usable token.
 
 ### Custom theme options
 

@@ -163,7 +163,7 @@ impl BrowserState {
         }
         self.begin_request(
             CatalogRequest::Search(query.to_owned()),
-            format!("Searching for {query}…"),
+            format!("Searching for {query}… Spotify sign-in opens in your browser if needed."),
             false,
         )
     }

@@ -245,7 +245,7 @@ fn run(
                         } else {
                             app.browser_mut().resolve(CatalogEvent::Failed {
                                 request_id,
-                                message: "Spotify catalogue is not configured. Add [spotify_api] client_id to config.toml, then run spotify-tui catalog-auth.".to_owned(),
+                                message: "Spotify catalogue is not configured. Add [spotify_api] client_id to config.toml, then search again.".to_owned(),
                             });
                         }
                     }

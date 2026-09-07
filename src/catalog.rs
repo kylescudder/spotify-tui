@@ -1,4 +1,13 @@
-use std::{fmt, io, sync::mpsc, thread, thread::JoinHandle};
+use std::{
+    fmt, io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    thread::JoinHandle,
+};
 
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -6,7 +15,10 @@ use thiserror::Error;
 use url::Url;
 
 use crate::{
-    catalog_auth::{CatalogAuthError, StoredToken, load_token, refresh_token, spotify_agent},
+    catalog_auth::{
+        CatalogAuthError, StoredToken, authenticate_from_tui, load_token, refresh_token,
+        spotify_agent,
+    },
     config::SpotifyApiConfig,
 };
 
@@ -145,15 +157,27 @@ struct SpotifyCatalogSource {
     config: SpotifyApiConfig,
     agent: ureq::Agent,
     token: StoredToken,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl SpotifyCatalogSource {
-    fn new(config: SpotifyApiConfig) -> Result<Self, CatalogError> {
-        let token = load_token(&config)?;
+    fn new_interactive(
+        config: SpotifyApiConfig,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self, CatalogError> {
+        let token = match load_token(&config) {
+            Ok(token) => token,
+            Err(error) if error.requires_authentication() => {
+                authenticate_from_tui(&config, &cancelled)?;
+                load_token(&config)?
+            }
+            Err(error) => return Err(error.into()),
+        };
         Ok(Self {
             config,
             agent: spotify_agent(),
             token,
+            cancelled,
         })
     }
 
@@ -206,17 +230,29 @@ impl SpotifyCatalogSource {
 
     fn get_json<T: DeserializeOwned>(&mut self, url: Url) -> Result<T, CatalogError> {
         if self.token.needs_refresh() {
-            self.token = refresh_token(&self.config, &self.token, &self.agent)?;
+            self.refresh_or_authenticate()?;
         }
 
         match request_json(&self.agent, &url, self.token.access_token()) {
             Err(ureq::Error::StatusCode(401)) => {
-                self.token = refresh_token(&self.config, &self.token, &self.agent)?;
+                self.refresh_or_authenticate()?;
                 request_json(&self.agent, &url, self.token.access_token())
                     .map_err(CatalogError::from_http)
             }
             result => result.map_err(CatalogError::from_http),
         }
+    }
+
+    fn refresh_or_authenticate(&mut self) -> Result<(), CatalogError> {
+        self.token = match refresh_token(&self.config, &self.token, &self.agent) {
+            Ok(token) => token,
+            Err(error) if error.requires_authentication() => {
+                authenticate_from_tui(&self.config, &self.cancelled)?;
+                load_token(&self.config)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        Ok(())
     }
 }
 
@@ -268,34 +304,59 @@ pub struct CatalogRuntime {
     request_tx: mpsc::Sender<RuntimeRequest>,
     event_rx: mpsc::Receiver<CatalogEvent>,
     worker: Option<JoinHandle<()>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl CatalogRuntime {
     pub fn start(config: SpotifyApiConfig) -> io::Result<Self> {
-        Self::start_with_factory(move || SpotifyCatalogSource::new(config))
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        Self::start_with_factory_and_cancel(
+            move || {
+                SpotifyCatalogSource::new_interactive(config.clone(), Arc::clone(&worker_cancelled))
+            },
+            cancelled,
+        )
     }
 
     pub fn start_with_source<S>(source: S) -> io::Result<Self>
     where
         S: CatalogSource + Send + 'static,
     {
-        Self::start_with_factory(move || Ok(source))
+        let mut source = Some(source);
+        Self::start_with_factory(move || {
+            source
+                .take()
+                .ok_or_else(|| CatalogError::Unavailable("source cannot be restarted".to_owned()))
+        })
     }
 
     fn start_with_factory<S, F>(factory: F) -> io::Result<Self>
     where
         S: CatalogSource + Send + 'static,
-        F: FnOnce() -> Result<S, CatalogError> + Send + 'static,
+        F: FnMut() -> Result<S, CatalogError> + Send + 'static,
+    {
+        Self::start_with_factory_and_cancel(factory, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn start_with_factory_and_cancel<S, F>(
+        factory: F,
+        cancelled: Arc<AtomicBool>,
+    ) -> io::Result<Self>
+    where
+        S: CatalogSource + Send + 'static,
+        F: FnMut() -> Result<S, CatalogError> + Send + 'static,
     {
         let (request_tx, request_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("spotify-tui-catalog".to_owned())
-            .spawn(move || run_worker(factory(), request_rx, &event_tx))?;
+            .spawn(move || run_worker(factory, request_rx, &event_tx))?;
         Ok(Self {
             request_tx,
             event_rx,
             worker: Some(worker),
+            cancelled,
         })
     }
 
@@ -317,11 +378,12 @@ impl CatalogRuntime {
     }
 }
 
-fn run_worker<S: CatalogSource>(
-    mut source: Result<S, CatalogError>,
+fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
+    mut factory: F,
     request_rx: mpsc::Receiver<RuntimeRequest>,
     event_tx: &mpsc::Sender<CatalogEvent>,
 ) {
+    let mut source: Option<S> = None;
     while let Ok(mut runtime_request) = request_rx.recv() {
         while let Ok(newer) = request_rx.try_recv() {
             runtime_request = newer;
@@ -334,8 +396,15 @@ fn run_worker<S: CatalogSource>(
             return;
         };
         let result = match source.as_mut() {
-            Ok(source) => source.fetch(&request),
-            Err(error) => Err(CatalogError::Unavailable(error.to_string())),
+            Some(source) => source.fetch(&request),
+            None => match factory() {
+                Ok(mut created) => {
+                    let result = created.fetch(&request);
+                    source = Some(created);
+                    result
+                }
+                Err(error) => Err(error),
+            },
         };
         let event = match result {
             Ok(page) => CatalogEvent::Loaded { request_id, page },
@@ -352,6 +421,7 @@ fn run_worker<S: CatalogSource>(
 
 impl Drop for CatalogRuntime {
     fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
         let _ = self.request_tx.send(RuntimeRequest::Shutdown);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -584,7 +654,13 @@ fn format_duration_ms(milliseconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
+    };
 
     use super::*;
 
@@ -646,6 +722,51 @@ mod tests {
                 Instant::now() < deadline,
                 "timed out waiting for catalogue event"
             );
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn runtime_lazily_retries_source_setup_without_restarting_the_tui() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed_attempts = Arc::clone(&attempts);
+        let runtime = CatalogRuntime::start_with_factory(move || {
+            if observed_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(CatalogError::Unavailable("sign-in required".to_owned()))
+            } else {
+                Ok(FakeSource)
+            }
+        })
+        .expect("runtime should start");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        runtime
+            .fetch(1, CatalogRequest::Search("first".to_owned()))
+            .expect("first request should be accepted");
+        assert!(matches!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::Failed { request_id: 1, .. }
+        ));
+        runtime
+            .fetch(2, CatalogRequest::Search("second".to_owned()))
+            .expect("retry should be accepted");
+        assert!(matches!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::Loaded {
+                request_id: 2,
+                page: CatalogPage::Search { query, .. },
+            } if query == "second"
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    fn receive_catalog_event(runtime: &CatalogRuntime) -> CatalogEvent {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Some(event) = runtime.try_event() {
+                return event;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for event");
             thread::yield_now();
         }
     }

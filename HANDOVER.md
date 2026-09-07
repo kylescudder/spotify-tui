@@ -44,9 +44,11 @@ Version 1 must provide:
 - Optional catalogue search across artists, albums, tracks, and playlists;
   artist pages listing releases; album pages listing tracks; and local playback
   of a selected track or playlist through its Spotify URI.
-- Separate catalogue onboarding through Authorization Code with PKCE, using a
-  user-supplied Spotify developer client ID and a loopback redirect. Never ask
-  for or store a client secret or Spotify password.
+- Lazy in-TUI catalogue onboarding through Authorization Code with PKCE, using
+  a user-supplied Spotify developer client ID and a loopback redirect. The first
+  search must open the browser and resume automatically without asking the user
+  to leave the TUI or run another command. Never ask for or store a client
+  secret or Spotify password.
 - Clear empty, disconnected, paused, loading, and error states.
 - A visually intentional layout that works at common terminal sizes.
 
@@ -139,6 +141,10 @@ directory with owner-only Unix permissions; no client secret is accepted.
 worker owns HTTP and token refresh away from the render/input thread. Selecting
 playable content passes its URI to `PlaybackSource`, so the Web API never
 streams audio or becomes the playback transport.
+Source initialization is lazy: a first search with no usable token opens the
+browser from the catalogue worker, waits for the loopback callback, and then
+continues that same request. Authentication errors remain retryable without
+restarting the TUI.
 
 Spotify's Development Mode restrictions still apply. Spotify uses
 per-developer quota buckets, returns `429` for quota/rate limiting, limits apps
@@ -237,8 +243,9 @@ implementation tasks.
 
 1. Perform live catalogue acceptance on `stevie`.
    - Create/configure a Spotify developer app, register the exact loopback
-     redirect, run `spotify-tui catalog-auth`, and confirm refresh-token reuse
-     after restarting the TUI.
+     redirect, run the first search, and confirm the browser opens and the
+     pending search resumes after approval. Confirm refresh-token reuse after
+     restarting the TUI.
    - Search for an artist, open an artist page, open an album, and play a track;
      also play a direct track and playlist search result.
    - Confirm cancellation, an unallowlisted user (`403`), quota exhaustion

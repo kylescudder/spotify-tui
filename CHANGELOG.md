@@ -31,6 +31,8 @@ uses semantic versioning once public releases begin.
 - Optional Spotify Web API catalogue access using a user-supplied client ID,
   browser-based PKCE authentication, an owner-only token cache, and automatic
   refresh without a client secret.
+- Launch catalogue authentication lazily from the first search and resume the
+  pending request after browser approval without leaving or restarting the TUI.
 - Keyboard-first search across artists, albums, tracks, and playlists, with
   artist release pages, album track pages, navigation history, asynchronous
   loading, and local Spotifyd playback for selected content.

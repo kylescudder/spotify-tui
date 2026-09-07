@@ -8,7 +8,7 @@ Spotify TUI — local-first terminal Spotify interface
 Usage:
   spotify-tui                 Start the terminal interface
   spotify-tui auth [-- ARGS]  Authenticate spotifyd, forwarding optional ARGS
-  spotify-tui catalog-auth    Authenticate Spotify catalogue access
+  spotify-tui catalog-auth    Authenticate catalogue access manually
   spotify-tui --help          Show this help
   spotify-tui --version       Show the installed version
 ";
