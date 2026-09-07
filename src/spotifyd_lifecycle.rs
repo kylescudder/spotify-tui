@@ -454,7 +454,7 @@ mod tests {
             systemd_service_command(
                 &config.systemctl_program,
                 LifecycleAction::Start,
-                OsStr::new("spotifyd.service")
+                &config.service,
             ),
             CommandSpec::new(
                 "systemctl",
