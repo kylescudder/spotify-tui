@@ -5,7 +5,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 use std::ffi::OsStr;
 
 use thiserror::Error;
@@ -20,7 +20,7 @@ pub const BREW_PROGRAM_ENV: &str = "SPOTIFY_TUI_BREW";
 
 #[cfg(any(target_os = "linux", test))]
 const TRANSIENT_LINUX_SERVICE: &str = "spotify-tui-spotifyd.service";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", all(test, not(target_os = "macos"))))]
 const DEFAULT_LINUX_SERVICE: &str = "spotifyd.service";
 #[cfg(target_os = "macos")]
 const DEFAULT_MACOS_SERVICE: &str = "io.github.kylescudder.spotifyd";
@@ -449,9 +449,10 @@ mod tests {
 
     #[test]
     fn linux_service_start_is_idempotent() {
+        let config = config();
         assert_eq!(
             systemd_service_command(
-                OsStr::new("systemctl"),
+                &config.systemctl_program,
                 LifecycleAction::Start,
                 OsStr::new("spotifyd.service")
             ),
