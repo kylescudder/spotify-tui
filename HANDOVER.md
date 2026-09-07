@@ -248,22 +248,18 @@ have deterministic tests. Catalogue playback deliberately bypasses Spotifyd
 0.4.2's off-by-one MPRIS `OpenUri` implementation. The remaining work is:
 
 Live validation on `stevie` has confirmed Spotifyd OAuth, phone-free activation,
-automatic recovery after restarting Spotifyd, and a successful `nix run .`
-build. Keep those paths in regression coverage, but they are no longer open
-implementation tasks.
+automatic recovery after restarting Spotifyd, a successful `nix run .` build,
+in-TUI catalogue authorization and search, artist/release navigation, responsive
+catalogue imagery, selected-release artwork, and instant revisiting of cached or
+prefetched images. Keep those paths in regression coverage, but they are no
+longer open implementation tasks.
 
 1. Perform live catalogue acceptance on `stevie`.
-   - Create/configure a Spotify developer app, register the exact loopback
-     redirect, run the first search, and confirm the browser opens and the
-     pending search resumes after approval. Confirm refresh-token reuse after
-     restarting the TUI.
-   - Search for an artist, open an artist page, open an album, and play a track;
-     also play a direct track and playlist search result. Confirm the selected
-     track—not the following album track—starts and that catalogue artwork
-     follows search/page context without crowding the narrow layout. Rapidly
-     scroll through releases and back again; confirm the selected cover follows
-     the row and previously visited or prefetched covers appear without another
-     visible loading delay.
+   - Restart the TUI and confirm the cached refresh token permits searching
+     without another browser approval.
+   - Play a track from artist → release → track, then play a direct track and a
+     playlist search result. Confirm the selected track—not the following album
+     track—starts in each applicable path.
    - Confirm cancellation, an unallowlisted user (`403`), quota exhaustion
      (`429`), network loss, empty results, and token-cache corruption all remain
      recoverable without disturbing local playback.
@@ -297,8 +293,7 @@ implementation tasks.
      generated user startup definition, preserves an existing config, and can be
      omitted explicitly without affecting the Spotify TUI installation.
 
-4. Activate and prove the release infrastructure after the external repositories
-   exist.
+4. Activate and prove the release infrastructure.
    - Run the non-publishing GitHub Actions rehearsal and require every Linux,
      macOS, Windows, Nix, installer, and Homebrew job to pass.
    - Configure the `HOMEBREW_TAP_TOKEN` integration and prove that a tagged
