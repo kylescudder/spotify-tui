@@ -1,0 +1,543 @@
+# Spotify TUI
+
+A local-first terminal Spotify interface powered by `spotifyd`. Playback,
+controls, now-playing metadata, and artwork use a local player interface and
+work without Spotify Web API access. Optional catalogue access
+adds search, artist releases, album tracks, and play-from-search through the
+Spotify Web API. Version 1 targets a Nix flake on Linux and Homebrew on macOS,
+plus direct POSIX and Windows installers.
+
+The project is under active development. Linux playback uses Spotifyd's MPRIS
+interface. macOS and Windows use the authenticated, loopback-only local-control
+adapter included in Spotify TUI's pinned Spotifyd build. Those packages must
+not be described as functionally complete until their live platform acceptance
+tests pass.
+
+## Installation
+
+The canonical repository is `kylescudder/spotify-tui`. Installation URLs become
+live after the first tagged release. The release workflow stamps the actual
+repository into both direct installers, which also keeps forks functional.
+
+### Nix
+
+Run directly from the flake:
+
+```bash
+nix run github:kylescudder/spotify-tui
+```
+
+Or install it into the current profile:
+
+```bash
+nix profile install github:kylescudder/spotify-tui
+```
+
+The flake exposes `packages.default`, `apps.default`, `checks`, a development
+shell, and a Home Manager module on `x86_64-linux` and `aarch64-linux`. Both
+`nix run` and the installed application start Spotifyd automatically: they use
+an existing user service when available and otherwise create an on-demand
+transient systemd user service. A Home Manager configuration can consume it
+with:
+
+```nix
+# flake.nix
+{
+  inputs.spotify-tui.url = "github:kylescudder/spotify-tui";
+}
+```
+
+Then import it from a Home Manager module where your flake inputs are available:
+
+```nix
+{ inputs, ... }:
+{
+  imports = [ inputs.spotify-tui.homeManagerModules.default ];
+  programs.spotify-tui.enable = true;
+}
+```
+
+The module installs Spotify TUI and enables a persistent Spotifyd user service
+with session MPRIS, so it also starts at login. Set
+`programs.spotify-tui.enableSpotifyd = false` to preserve a separately managed
+Spotifyd service; Spotify TUI still verifies that daemon is running whenever it
+launches.
+
+### Homebrew on macOS
+
+Spotify TUI is published through the existing
+[`kylescudder/tap`](https://github.com/kylescudder/homebrew-tap) tap:
+
+```bash
+brew install kylescudder/tap/spotify-tui
+```
+
+The formula builds and installs the compatible pinned Spotifyd runtime and
+defines a Homebrew service for it. On its first launch, Spotify TUI registers
+and starts that service through
+`brew services`; subsequent launches reuse it. The release workflow styles,
+audits, builds, installs, and tests the formula on macOS before opening its tap
+update pull request.
+
+### Direct installer on Linux or macOS
+
+```bash
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
+  https://github.com/kylescudder/spotify-tui/releases/latest/download/install.sh | sh
+```
+
+The installer detects the platform, downloads the matching release archive,
+checks it against `SHA256SUMS`, and installs Spotify TUI, its diagnostic, and a
+pinned Spotifyd runtime to `$HOME/.local/bin` without `sudo`. Linux preserves a
+compatible existing Spotifyd binary, while macOS installs the bundled runtime
+required by its local-control adapter. Existing configuration is preserved. A
+new Linux installation gets a
+session-MPRIS configuration and a systemd user service that is enabled and
+started immediately; macOS gets a LaunchAgent that is bootstrapped immediately.
+
+The bundled Linux Spotifyd is dynamically linked to the normal ALSA/PulseAudio,
+D-Bus, OpenSSL, and system runtime libraries. The installer does not invoke a
+system package manager to add those libraries. NixOS users should use the Nix
+flake, which supplies the complete runtime closure.
+
+To inspect the script or pin a version:
+
+```bash
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
+  https://github.com/kylescudder/spotify-tui/releases/latest/download/install.sh \
+  -o install-spotify-tui.sh
+less install-spotify-tui.sh
+sh install-spotify-tui.sh --version 0.1.0 --install-dir "$HOME/.local/bin"
+```
+
+Useful installer controls are:
+
+| Option | Purpose |
+| --- | --- |
+| `--config-dir DIRECTORY` | Override the directory for a newly created `spotifyd.conf`. |
+| `--no-dependencies` | Install only Spotify TUI and its diagnostic. |
+| `--force-dependencies` | Replace an existing Linux Spotifyd with the bundled pinned build. |
+| `--no-service` | Do not create or enable the systemd user unit or LaunchAgent. |
+
+The direct installer does not invoke or modify Homebrew, Nix, Apt, or another
+system package manager.
+
+### Direct installer on Windows
+
+From PowerShell:
+
+```powershell
+irm https://github.com/kylescudder/spotify-tui/releases/latest/download/install.ps1 | iex
+```
+
+The default destination is
+`%LOCALAPPDATA%\Programs\spotify-tui\bin`, which is added to the user PATH. The
+release archive contains Spotifyd built from the pinned upstream source with
+the portable Rodio backend and Spotify TUI local control. The installer keeps
+that compatible runtime upgraded, preserves existing configuration, adds a user
+Startup entry, and starts the daemon in the current session.
+The inspect-first, version-pinned form is:
+
+```powershell
+Invoke-WebRequest `
+  https://github.com/kylescudder/spotify-tui/releases/latest/download/install.ps1 `
+  -OutFile install-spotify-tui.ps1
+Get-Content .\install-spotify-tui.ps1
+.\install-spotify-tui.ps1 -Version 0.1.0 -NoModifyPath
+```
+
+PowerShell accepts `-ConfigDir`, `-NoDependencies`, `-ForceDependencies`,
+`-NoService`, and `-NoModifyPath` for the equivalent Windows controls.
+
+### Release verification
+
+Every release includes `SHA256SUMS`, GitHub build-provenance attestations, the
+Spotifyd GPLv3 licence, and the complete upstream source plus Spotify TUI patch
+corresponding to the bundled Spotifyd binary.
+After downloading an artifact, verify its checksum and provenance with:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify spotify-tui-x86_64-unknown-linux-musl.tar.gz \
+  --repo kylescudder/spotify-tui
+```
+
+### Uninstall
+
+Use `nix profile remove`, `brew uninstall spotify-tui`, or remove the files
+installed by the direct installer. Only remove `spotifyd` here if the direct
+installer supplied it rather than preserving an existing installation:
+
+```bash
+rm "$HOME/.local/bin/spotify-tui" "$HOME/.local/bin/spotify-tui-diagnose"
+rm "$HOME/.local/bin/spotifyd"
+```
+
+On Windows, remove `spotify-tui.exe`, `spotify-tui-diagnose.exe`, and a
+direct-installer-owned `spotifyd.exe` from
+`%LOCALAPPDATA%\Programs\spotify-tui\bin`; remove the generated `spotifyd.cmd`
+from the user Startup directory and then remove the install directory from the
+user PATH if the installer added it. Configuration and OAuth credentials are
+deliberately retained during uninstall.
+
+## Development
+
+Run from a Rust checkout with:
+
+```bash
+cargo run
+```
+
+On Linux, the TUI connects to Spotifyd over the graphical session's MPRIS bus.
+It updates from D-Bus signals and reconnects automatically if Spotifyd stops and
+comes back. When Spotifyd is running but inactive, the TUI asks Spotifyd to
+transfer playback to itself automatically. An official Spotify client or phone
+is not required to activate the device. This uses Spotifyd's documented
+[`TransferPlayback` D-Bus control](https://docs.spotifyd.rs/advanced/dbus.html).
+Spotifyd can briefly report that no MPRIS position exists while an empty or new
+session activates; Spotify TUI treats that as position zero and remains
+connected until real progress arrives.
+
+Album artwork is loaded directly from the `mpris:artUrl` supplied by Spotifyd;
+it does not use the Spotify Web API. Downloads and image decoding run off the
+input/render thread with HTTPS enforcement, a five-second timeout, size and
+decode limits, and an eight-entry in-memory cache. Ghostty uses its Kitty
+graphics support when detected. Other terminals fall back automatically to
+Unicode half blocks, while missing or invalid artwork displays a text
+placeholder.
+
+Search results and artist and album pages reuse that same bounded artwork
+pipeline with image URLs returned by the Spotify Web API. The TUI keeps the
+eight most recently used images in memory and optimistically prefetches up to
+four nearby results on a separate worker, so moving back through a list avoids
+another download and a slow speculative image cannot delay the selected one.
+Cache hits are applied before the next frame is drawn, and the event loop checks
+for download and terminal-encoding completion every 16 milliseconds while art
+is pending instead of waiting for its normal 250-millisecond idle tick. Wide
+catalogue views show a borderless image beside the list; narrow views devote the
+full width to navigation instead.
+
+### Playback controls
+
+| Key | Action |
+| --- | --- |
+| `Space` | Play or pause. |
+| `p` | Previous track. |
+| `n` | Next track. |
+| `h` or `Left` | Seek backward 5 seconds. |
+| `l` or `Right` | Seek forward 5 seconds. |
+| `j` or `Down` | Lower volume by 5%. |
+| `k` or `Up` | Raise volume by 5%. |
+| `/` | Open Spotify catalogue search. |
+| `a` | Leave the TUI temporarily and run Spotifyd authentication. |
+| `r` | Retry the local playback connection immediately. |
+| `q`, `Esc`, or `Ctrl-C` | Quit. |
+
+Inspect the current normalized MPRIS state without starting the TUI with:
+
+```bash
+cargo run --bin spotify-tui-diagnose
+```
+
+The diagnostic is read-only and reports `connection: disconnected` until
+Spotifyd has created its MPRIS player. The main TUI performs the additional
+activation step automatically, so use it—not the diagnostic—to test first-run
+device activation.
+
+## Authentication
+
+Spotify TUI never collects a Spotify password. Playback authentication is
+delegated to the installed `spotifyd` binary, which stores and owns that
+credential. The separate, optional catalogue flow described below uses
+browser-based PKCE and stores only its own Web API tokens.
+
+Authenticate once before the first normal launch:
+
+```bash
+spotify-tui auth
+```
+
+Spotifyd prints a browser URL. Open it, sign into Spotify, approve the
+connection, and return to the terminal. After successful authentication,
+Spotify TUI restarts the platform's managed Spotifyd process so the new
+credential is picked up immediately. Normal TUI startup and the `r` retry key
+also ensure the daemon is running; users do not need to start `spotifyd`
+themselves. A lifecycle failure is shown as an actionable TUI error.
+
+The disconnected, connecting, and error screens offer the same flow without
+leaving the application permanently:
+
+```text
+a  leave the TUI temporarily and authenticate with spotifyd
+r  retry the local connection
+q  quit
+```
+
+Arguments after `auth` are forwarded to `spotifyd authenticate`. A leading `--`
+is optional and useful for clarity:
+
+```bash
+spotify-tui auth -- --oauth-port 9876
+spotify-tui auth -- --config-path /path/to/spotifyd.conf
+```
+
+Packaging wrappers can use these environment variables when Spotifyd is not in
+the normal path or its generated configuration lives elsewhere:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SPOTIFY_TUI_SPOTIFYD` | `spotifyd` | Spotifyd executable or absolute path. |
+| `SPOTIFY_TUI_SPOTIFYD_CONFIG` | Unset | Config path passed to Spotifyd for authentication and automatic daemon startup. |
+| `SPOTIFY_TUI_SPOTIFYD_SERVICE` | Platform default | systemd user unit or launchd label managed by the TUI. |
+| `SPOTIFY_TUI_SYSTEMCTL` | `systemctl` | `systemctl` executable or absolute path. |
+| `SPOTIFY_TUI_SYSTEMD_RUN` | `systemd-run` | Linux transient-user-service executable or absolute path. |
+| `SPOTIFY_TUI_LAUNCHCTL` | `launchctl` | macOS launchd controller executable or absolute path. |
+| `SPOTIFY_TUI_BREW` | `brew` | Homebrew executable used for formula service lifecycle. |
+| `SPOTIFY_TUI_CONTROL_ADDRESS` | Auto-discovered | Fixed loopback address for the macOS/Windows local-control adapter. |
+| `SPOTIFY_TUI_CONTROL_ADDRESS_FILE` | Platform local-data directory | Override the daemon endpoint discovery file. |
+| `SPOTIFY_TUI_CONTROL_TOKEN_FILE` | Platform local-data directory | Override the owner-local authentication token shared with Spotifyd. |
+
+Spotifyd also supports Spotify Connect discovery as an alternative: select its
+device from an official Spotify client on the same local network. This is
+optional on Linux: after authentication, Spotify TUI uses
+Spotifyd's local D-Bus control interface to activate the device without a phone.
+If Spotify has a resumable context, press `Space` to continue it. To guarantee a
+specific context on a fresh session, configure `playback.startup_uri` as
+described below.
+
+Spotifyd requires a Spotify Premium account. MPRIS and systemd integration are
+Linux-only; macOS and Windows use a per-user discovery file, an ephemeral
+loopback port, and an owner-local random token. Their adapters and packaging are
+implemented, but both still require live acceptance before those packages are
+called functionally complete.
+
+## Catalogue search
+
+Catalogue access is optional. Without it, the local now-playing screen and all
+playback controls continue to work. Once configured, press `/`, type a query,
+and press `Enter`. Results include artists, albums, tracks, and playlists.
+This is also the phone-free way to choose the first content in a Spotify session
+that has no resumable context.
+
+- `j`/`k` or the arrow keys move through results.
+- `Enter` opens an artist or album, or starts a selected track or playlist.
+- `Esc`, `h`, or `Left` returns to the previous page.
+- `/` starts a new search and `q` quits.
+
+An artist page shows the artist's album and single releases. Its artwork preview
+follows the selected release, falling back to the artist image when a release
+has no cover. Opening a release shows its tracks. Selecting a track asks Spotify
+to start that exact URI on the active Spotifyd device, retaining its album as
+the playback context. This avoids an off-by-one bug in stock Spotifyd 0.4.2's
+MPRIS `OpenUri` implementation; the bundled macOS/Windows runtime selects the
+exact URI within that context instead of calculating a track-number offset.
+Play/pause, previous/next, seeking, volume, and now-playing state remain on the
+platform's local playback connection.
+
+Spotify does not provide a distributable, zero-configuration Web API client for
+this use case. Each installation therefore needs a Spotify developer app client
+ID. No client secret is used or stored.
+
+1. Create an app in the
+   [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. Add `http://127.0.0.1:8989/callback` as an exact redirect URI in that app.
+3. Put the app's client ID in `config.toml`:
+
+   ```toml
+   version = 1
+
+   [spotify_api]
+   client_id = "your-client-id"
+   ```
+
+   Merge this section into an existing config; do not replace its `[playback]`
+   or `[themes.*]` sections.
+
+4. Start the TUI, press `/`, enter a search, and press `Enter`:
+
+   ```bash
+   spotify-tui
+   ```
+
+The first search automatically opens Spotify's browser approval page. The TUI
+keeps running while Authorization Code with PKCE completes over the loopback
+redirect, then continues the original search without another command or
+restart. Approval includes permission to control playback so catalogue track
+selection can target the active Spotifyd device. Tokens created by an older
+build prompt for this additional permission once on the next search. The TUI
+stores the resulting Web API access and refresh token at
+`$XDG_STATE_HOME/spotify-tui/spotify-api-token.json`, or
+`$HOME/.local/state/spotify-tui/spotify-api-token.json` when
+`XDG_STATE_HOME` is unset. The cache is created with owner-only permissions on
+Unix. Tokens refresh automatically; a missing, corrupt, or expired
+authorization starts the browser flow again. `spotify-tui catalog-auth` remains
+available for scripts and troubleshooting but is not part of normal use.
+
+Spotify Development Mode currently limits an app to five explicitly allowlisted
+users and requires the app owner to have Spotify Premium. Add every intended
+test user in the dashboard. A `403` in search generally means the signed-in
+account is not allowlisted; a `429` means the app quota has been exceeded.
+
+## Configuration
+
+Configuration uses TOML and is optional. If no file is found, Spotify TUI starts
+with the built-in `spotify` colour scheme.
+
+### Config file location
+
+The first applicable location wins:
+
+1. The path in `SPOTIFY_TUI_CONFIG`, when the environment variable is set.
+2. `$XDG_CONFIG_HOME/spotify-tui/config.toml`, when `XDG_CONFIG_HOME` is set.
+3. `$HOME/.config/spotify-tui/config.toml`.
+4. Built-in defaults when none of those paths can be resolved or the default
+   config file does not exist.
+
+An explicitly selected `SPOTIFY_TUI_CONFIG` file must exist. Unreadable files,
+unknown options, and invalid values produce an actionable error before the
+application enters raw terminal mode.
+
+To try a file without installing it permanently:
+
+```bash
+SPOTIFY_TUI_CONFIG=/path/to/config.toml cargo run
+```
+
+### Top-level options
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `version` | Yes | — | Configuration schema version. The current and only supported value is `1`. |
+| `theme` | No | `"spotify"` | Active built-in theme or a custom name declared under `[themes]`. |
+
+The built-in theme names are `spotify`, `midnight`, and `high-contrast`:
+
+```toml
+version = 1
+theme = "midnight"
+```
+
+### Playback options
+
+Playback options live under `[playback]`:
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `startup_uri` | No | Unset | Spotify URI opened after the TUI activates an inactive Spotifyd session. |
+
+Set `startup_uri` when the user should always have something playable without
+first choosing the device from another Spotify client:
+
+```toml
+version = 1
+
+[playback]
+startup_uri = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+```
+
+The value must be a Spotify URI such as `spotify:track:...`,
+`spotify:album:...`, or `spotify:playlist:...`; web URLs are rejected. It is
+opened only as part of activating Spotifyd, not every time the TUI starts while
+Spotifyd already has an active player. Leave it unset to preserve and resume
+Spotify's existing context.
+
+### Spotify catalogue options
+
+Catalogue options live under `[spotify_api]`. Omitting the entire section keeps
+catalogue access disabled while preserving every local playback feature.
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `client_id` | Yes | — | Public client ID from the Spotify Developer Dashboard. A client secret is neither accepted nor needed. |
+| `redirect_uri` | No | `"http://127.0.0.1:8989/callback"` | Exact loopback redirect registered for the Spotify app. It must use HTTP, a numeric loopback host, an explicit port, and a non-root path. |
+| `token_cache` | No | Platform state directory | Override the JSON token-cache path. On Unix the file is created with mode `0600`. |
+
+A complete example using every catalogue option is:
+
+```toml
+version = 1
+
+[spotify_api]
+client_id = "your-client-id"
+redirect_uri = "http://127.0.0.1:8989/callback"
+token_cache = "/home/alice/.local/state/spotify-tui/catalog-token.json"
+```
+
+The redirect URI in the config and Spotify dashboard must match exactly. After
+changing `client_id`, `redirect_uri`, or `token_cache`, run
+`spotify-tui catalog-auth` once or remove the old token cache; the next search
+will otherwise authenticate automatically when it finds no usable token.
+
+### Custom theme options
+
+Declare a custom theme with `[themes.<name>]`, then select that name with the
+top-level `theme` option. Every custom theme option is optional: omitted colours
+come from its `base`.
+
+| Option | Default | UI role |
+| --- | --- | --- |
+| `base` | `"spotify"` | Built-in theme to inherit from. Must be `spotify`, `midnight`, or `high-contrast`; custom themes cannot inherit from other custom themes. |
+| `background` | From `base` | Terminal canvas and panel background. |
+| `foreground` | From `base` | Primary text and values. |
+| `muted` | From `base` | Help text, secondary metadata, and disconnected states. |
+| `border` | From `base` | Panel borders and dividers. |
+| `accent` | From `base` | Title, active controls, and connected/playing states. |
+| `warning` | From `base` | Connecting, loading, and other attention states. |
+| `error` | From `base` | Playback and runtime error states. |
+
+Custom names may contain any TOML-compatible key characters but cannot replace
+a built-in theme name. This example shows every available custom theme option:
+
+```toml
+version = 1
+theme = "ocean"
+
+[themes.ocean]
+base = "midnight"
+background = "#07111f"
+foreground = "#dbeafe"
+muted = "dark-gray"
+border = "#274060"
+accent = "#38bdf8"
+warning = "light-yellow"
+error = "light-red"
+```
+
+### Colour values
+
+Every colour option accepts either a six-digit RGB value such as `"#1ed760"` or
+one of these case-insensitive terminal colour names:
+
+```text
+default, reset,
+black, red, green, yellow, blue, magenta, cyan, white,
+gray, grey, dark-gray, dark-grey,
+light-red, light-green, light-yellow, light-blue, light-magenta, light-cyan
+```
+
+Underscores can be used instead of hyphens, so `"light_cyan"` and
+`"light-cyan"` are equivalent.
+
+### Catppuccin Mocha example
+
+A complete ready-to-use configuration is included at
+[themes/catppuccin-mocha.toml](themes/catppuccin-mocha.toml). Run it directly
+from the repository with:
+
+```bash
+SPOTIFY_TUI_CONFIG=themes/catppuccin-mocha.toml cargo run
+```
+
+## Development
+
+Run all repository checks with:
+
+```bash
+make check
+```
+
+The individual commands are `make format`, `make format-check`, `make lint`,
+and `make test`.
+
+See [HANDOVER.md](HANDOVER.md) for the product boundary, architecture, execution
+sequence, and acceptance checks.

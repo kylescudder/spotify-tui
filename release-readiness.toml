@@ -1,0 +1,7 @@
+version = 1
+public_release_version = ""
+
+[platforms]
+linux = "0.1.0"
+macos = ""
+windows = ""

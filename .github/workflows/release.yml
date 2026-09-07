@@ -1,0 +1,471 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to rehearse; it must match Cargo.toml
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          cargo_version=$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)
+          if [[ ! "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Cargo.toml does not contain a semantic package version" >&2
+            exit 1
+          fi
+
+          publish=false
+          expected_version="$cargo_version"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            publish=true
+            tag_version=${GITHUB_REF_NAME#v}
+            if [[ "$tag_version" != "$cargo_version" ]]; then
+              echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
+              exit 1
+            fi
+            sh scripts/validate-release-readiness.sh "$cargo_version"
+          elif [[ -n "$REQUESTED_VERSION" ]]; then
+            expected_version=${REQUESTED_VERSION#v}
+            if [[ "$expected_version" != "$cargo_version" ]]; then
+              echo "requested version $expected_version does not match Cargo.toml version $cargo_version" >&2
+              exit 1
+            fi
+          fi
+
+          echo "version=$expected_version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+      - name: Validate workflow definitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            -o "$archive"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -color
+
+      - name: Install Rust components
+        run: rustup component add clippy rustfmt
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: release-preflight
+          save-if: ${{ github.event_name != 'pull_request' }}
+
+      - name: Re-run Rust quality checks
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets --all-features
+
+  nix:
+    name: Release Nix check (${{ matrix.os }})
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+
+      - name: Check and build flake
+        run: |
+          nix flake check --print-build-logs
+          nix build --print-build-logs
+
+  binaries:
+    name: Binary (${{ matrix.target }})
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive: tar
+            spotifyd_mode: download
+            spotifyd_asset: spotifyd-linux-x86_64-default.tar.gz
+            spotifyd_sha512: c2b73784bf904d40d9a58f6c43e215a7be448f01039ae899ca5dbe4cdb9369d77e4d43c3a1e63fef7ca5adda365eac37f1d91c1e8018391afa907660552bd8db
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive: tar
+            spotifyd_mode: download
+            spotifyd_asset: spotifyd-linux-aarch64-default.tar.gz
+            spotifyd_sha512: 23d7f48a05895b25722c467178d17c6c3f1e67efe0e2eea42a5362d61f0b46927635cc30d61ef64f7e1147523fafbaeda8bda9afe36cebccb704bdaf3d9a61e9
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar
+            spotifyd_mode: build
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: tar
+            spotifyd_mode: build
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            spotifyd_mode: build
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check out pinned Spotifyd source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Spotifyd/spotifyd
+          ref: c5b94367014856a8c541dea565cbd332e034fb9e
+          path: spotifyd-upstream
+          persist-credentials: false
+
+      - name: Add Spotify TUI local control to Spotifyd
+        if: matrix.spotifyd_mode == 'build'
+        shell: bash
+        run: sh packaging/spotifyd/apply-local-control.sh spotifyd-upstream
+
+      - name: Install Rust target
+        run: |
+          rustup target add ${{ matrix.target }}
+          rustup component add clippy
+
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: release-${{ matrix.target }}
+          workspaces: |
+            . -> target
+            spotifyd-upstream -> target
+
+      - name: Lint and test release target
+        run: |
+          cargo clippy --locked --target ${{ matrix.target }} --all-targets --all-features -- -D warnings
+          cargo test --locked --target ${{ matrix.target }} --all-targets --all-features
+
+      - name: Build release binaries
+        run: cargo build --locked --release --bins --target ${{ matrix.target }}
+
+      - name: Download pinned Spotifyd binary
+        if: matrix.spotifyd_mode == 'download'
+        shell: bash
+        env:
+          SPOTIFYD_ASSET: ${{ matrix.spotifyd_asset }}
+          SPOTIFYD_SHA512: ${{ matrix.spotifyd_sha512 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/spotifyd"
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/Spotifyd/spotifyd/releases/download/v0.4.2/${SPOTIFYD_ASSET}" \
+            -o "$RUNNER_TEMP/spotifyd/${SPOTIFYD_ASSET}"
+          echo "${SPOTIFYD_SHA512}  $RUNNER_TEMP/spotifyd/${SPOTIFYD_ASSET}" | sha512sum --check
+          tar -xzf "$RUNNER_TEMP/spotifyd/${SPOTIFYD_ASSET}" -C "$RUNNER_TEMP/spotifyd"
+
+      - name: Build pinned Spotifyd runtime
+        if: matrix.spotifyd_mode == 'build'
+        run: |
+          cargo test --locked \
+            --manifest-path spotifyd-upstream/Cargo.toml \
+            --no-default-features --features rodio_backend,local_control \
+            local_control::tests
+          cargo build --locked --release \
+            --manifest-path spotifyd-upstream/Cargo.toml \
+            --no-default-features --features rodio_backend,local_control
+
+      - name: Package Unix binaries
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.spotifyd_mode }}' == download ]]; then
+            spotifyd_binary="$RUNNER_TEMP/spotifyd/spotifyd"
+          else
+            spotifyd_binary="$PWD/spotifyd-upstream/target/release/spotifyd"
+          fi
+          sh scripts/package-unix.sh \
+            '${{ matrix.target }}' \
+            '${{ needs.preflight.outputs.version }}' \
+            dist \
+            "$spotifyd_binary" \
+            "$PWD/spotifyd-upstream/LICENSE"
+
+      - name: Package Windows binaries
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "spotify-tui-stage"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/spotify-tui.exe" $stage
+          Copy-Item "target/${{ matrix.target }}/release/spotify-tui-diagnose.exe" $stage
+          Copy-Item "spotifyd-upstream/target/release/spotifyd.exe" $stage
+          Copy-Item "spotifyd-upstream/LICENSE" (Join-Path $stage "SPOTIFYD-LICENSE")
+          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md $stage
+          Copy-Item -Recurse themes (Join-Path $stage "themes")
+          New-Item -ItemType Directory -Path dist | Out-Null
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, "dist/spotify-tui-${{ matrix.target }}.zip")
+
+      - name: Upload binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    name: Assemble release bundle
+    needs: [preflight, binaries]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Download binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Build source, installers, formula, and checksums
+        shell: bash
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          git archive --format=tar --prefix="spotify-tui-${VERSION}/" HEAD | gzip -n > dist/spotify-tui-source.tar.gz
+
+          sed "s|@REPOSITORY@|${GITHUB_REPOSITORY}|g" scripts/install.sh > dist/install.sh
+          sed "s|@REPOSITORY@|${GITHUB_REPOSITORY}|g" scripts/install.ps1 > dist/install.ps1
+          chmod 0755 dist/install.sh
+
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/Spotifyd/spotifyd/archive/c5b94367014856a8c541dea565cbd332e034fb9e.tar.gz \
+            -o dist/spotifyd-0.4.2-source.tar.gz
+          echo "d711e441d709e76f93b4ab297782d01dee6aa166e4015746fd5230d61fcaba71  dist/spotifyd-0.4.2-source.tar.gz" | sha256sum --check
+
+          source_sha=$(sha256sum dist/spotify-tui-source.tar.gz | awk '{ print $1 }')
+          sh scripts/render-homebrew-formula.sh "$GITHUB_REPOSITORY" "$VERSION" "$source_sha" dist/spotify-tui.rb
+
+          cd dist
+          sha256sum install.sh install.ps1 spotify-* > SHA256SUMS
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-bundle
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  test-posix-release:
+    name: Release installer (${{ matrix.os }})
+    needs: [preflight, assemble]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install Linux Spotifyd runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev libdbus-1-dev libpulse-dev libssl-dev
+
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-bundle
+          path: bundle
+
+      - name: Install and smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/spotify-tui-bin"
+          config_dir="$RUNNER_TEMP/spotifyd-config"
+          SPOTIFY_TUI_RELEASE_BASE_URL="$PWD/bundle" \
+          SPOTIFY_TUI_ALLOW_INSECURE_FOR_TESTS=1 \
+            sh bundle/install.sh \
+              --install-dir "$install_dir" \
+              --config-dir "$config_dir" \
+              --force-dependencies \
+              --no-service
+          "$install_dir/spotify-tui" --version
+          "$install_dir/spotifyd" --version
+
+  test-windows-release:
+    name: Release installer (Windows)
+    needs: [preflight, assemble]
+    runs-on: windows-2025
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-bundle
+          path: bundle
+
+      - name: Install and smoke test
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "spotify-tui-bin"
+          $configDir = Join-Path $env:RUNNER_TEMP "spotifyd-config"
+          ./bundle/install.ps1 `
+            -ReleaseBaseUrl (Resolve-Path bundle) `
+            -AllowInsecureForTests `
+            -NoModifyPath `
+            -NoService `
+            -ForceDependencies `
+            -ConfigDir $configDir `
+            -InstallDir $installDir
+          & (Join-Path $installDir "spotify-tui.exe") --version
+          & (Join-Path $installDir "spotifyd.exe") --version
+
+  test-homebrew-release:
+    name: Homebrew formula (${{ matrix.os }})
+    needs: [preflight, assemble]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-bundle
+          path: bundle
+
+      - name: Validate formula style
+        run: |
+          brew style bundle/spotify-tui.rb
+          brew audit --strict bundle/spotify-tui.rb
+
+      - name: Install and test formula from staged source
+        shell: bash
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          local_source="$RUNNER_TEMP/spotify-tui-${VERSION}.tar.gz"
+          cp bundle/spotify-tui-source.tar.gz "$local_source"
+          source_url="file://${local_source}"
+          sed "s|^  url .*|  url \"${source_url}\"|" bundle/spotify-tui.rb > "$RUNNER_TEMP/spotify-tui.rb"
+          brew install --formula "$RUNNER_TEMP/spotify-tui.rb"
+          brew test spotify-tui
+
+  publish:
+    name: Publish GitHub release
+    if: needs.preflight.outputs.publish == 'true'
+    needs: [preflight, assemble, update-homebrew-tap]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-bundle
+          path: bundle
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: bundle/*
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" bundle/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+
+  update-homebrew-tap:
+    name: Open Homebrew tap update
+    if: needs.preflight.outputs.publish == 'true'
+    needs: [preflight, nix, assemble, test-posix-release, test-windows-release, test-homebrew-release]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-bundle
+          path: bundle
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: kylescudder/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Commit formula update and open pull request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPOSITORY: kylescudder/homebrew-tap
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch="spotify-tui-v${VERSION}"
+          mkdir -p tap/Formula
+          cp bundle/spotify-tui.rb tap/Formula/spotify-tui.rb
+          git -C tap config user.name github-actions[bot]
+          git -C tap config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C tap checkout -B "$branch"
+          git -C tap add Formula/spotify-tui.rb
+          git -C tap commit -m "spotify-tui ${VERSION}"
+          git -C tap push --force origin "$branch"
+          if gh pr view "$branch" --repo "$TAP_REPOSITORY" >/dev/null 2>&1; then
+            echo "Homebrew pull request already exists for $branch"
+          else
+            gh pr create \
+              --repo "$TAP_REPOSITORY" \
+              --head "$branch" \
+              --title "spotify-tui ${VERSION}" \
+              --body "Automated formula update for spotify-tui v${VERSION}."
+          fi
