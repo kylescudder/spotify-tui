@@ -1,5 +1,5 @@
 {
-  description = "A local-first terminal Spotify controller powered by spotifyd";
+  description = "A local-first terminal Spotify interface powered by spotifyd";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -35,7 +35,7 @@
           '';
 
           meta = {
-            description = "Local-first terminal Spotify controller powered by spotifyd";
+            description = "Local-first terminal Spotify interface powered by spotifyd";
             homepage = "https://github.com/kylescudder/spotify-tui";
             license = nixpkgs.lib.licenses.mit;
             mainProgram = "spotify-tui";

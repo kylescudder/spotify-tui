@@ -1,6 +1,9 @@
 pub mod app;
 pub mod artwork;
 pub mod auth;
+pub mod browser;
+pub mod catalog;
+pub mod catalog_auth;
 pub mod cli;
 pub mod config;
 pub mod input;

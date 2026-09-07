@@ -26,6 +26,12 @@ uses semantic versioning once public releases begin.
   bounded responsive placement, vertically centred compact playback details,
   and placeholders that clear once artwork is ready.
 - TOML configuration with built-in and custom colour themes.
+- Optional Spotify Web API catalogue access using a user-supplied client ID,
+  browser-based PKCE authentication, an owner-only token cache, and automatic
+  refresh without a client secret.
+- Keyboard-first search across artists, albums, tracks, and playlists, with
+  artist release pages, album track pages, navigation history, asynchronous
+  loading, and local Spotifyd playback for selected content.
 - Removed the planned audio spectrum from the product scope and dropped the
   unused `cava` dependency from Nix and Homebrew packaging.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,

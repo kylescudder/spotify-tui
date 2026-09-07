@@ -13,12 +13,14 @@ pub const CONFIG_PATH_ENV: &str = "SPOTIFY_TUI_CONFIG";
 pub const BUILT_IN_THEME_NAMES: [&str; 3] = ["spotify", "midnight", "high-contrast"];
 
 const DEFAULT_THEME_NAME: &str = "spotify";
+const DEFAULT_SPOTIFY_API_REDIRECT_URI: &str = "http://127.0.0.1:8989/callback";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     theme_name: String,
     theme: Theme,
     startup_uri: Option<String>,
+    spotify_api: Option<SpotifyApiConfig>,
     source_path: Option<PathBuf>,
 }
 
@@ -28,6 +30,7 @@ impl Default for Config {
             theme_name: DEFAULT_THEME_NAME.to_owned(),
             theme: Theme::spotify(),
             startup_uri: None,
+            spotify_api: None,
             source_path: None,
         }
     }
@@ -74,6 +77,10 @@ impl Config {
         self.startup_uri.as_deref()
     }
 
+    pub const fn spotify_api(&self) -> Option<&SpotifyApiConfig> {
+        self.spotify_api.as_ref()
+    }
+
     pub fn source_path(&self) -> Option<&Path> {
         self.source_path.as_deref()
     }
@@ -100,6 +107,27 @@ impl Config {
             })?;
 
         document.resolve(source_path)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpotifyApiConfig {
+    client_id: String,
+    redirect_uri: String,
+    token_cache: Option<PathBuf>,
+}
+
+impl SpotifyApiConfig {
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    pub fn redirect_uri(&self) -> &str {
+        &self.redirect_uri
+    }
+
+    pub fn token_cache(&self) -> Option<&Path> {
+        self.token_cache.as_deref()
     }
 }
 
@@ -225,6 +253,12 @@ pub enum ConfigError {
     },
     #[error("invalid playback.startup_uri '{0}'; use a Spotify URI beginning with spotify:")]
     InvalidStartupUri(String),
+    #[error("spotify_api.client_id cannot be empty")]
+    EmptySpotifyApiClientId,
+    #[error(
+        "invalid spotify_api.redirect_uri '{0}'; use an HTTP loopback URI such as http://127.0.0.1:8989/callback"
+    )]
+    InvalidSpotifyApiRedirectUri(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,6 +271,7 @@ struct ConfigDocument {
     themes: BTreeMap<String, ThemeDefinition>,
     #[serde(default)]
     playback: PlaybackDefinition,
+    spotify_api: Option<SpotifyApiDefinition>,
 }
 
 impl ConfigDocument {
@@ -266,11 +301,16 @@ impl ConfigDocument {
             .ok_or_else(|| ConfigError::UnknownTheme(self.theme.clone()))?;
 
         let startup_uri = validate_startup_uri(self.playback.startup_uri)?;
+        let spotify_api = self
+            .spotify_api
+            .map(SpotifyApiDefinition::resolve)
+            .transpose()?;
 
         Ok(Config {
             theme_name: self.theme,
             theme,
             startup_uri,
+            spotify_api,
             source_path,
         })
     }
@@ -280,6 +320,46 @@ impl ConfigDocument {
 #[serde(deny_unknown_fields)]
 struct PlaybackDefinition {
     startup_uri: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpotifyApiDefinition {
+    client_id: String,
+    #[serde(default = "default_spotify_api_redirect_uri")]
+    redirect_uri: String,
+    token_cache: Option<PathBuf>,
+}
+
+impl SpotifyApiDefinition {
+    fn resolve(self) -> Result<SpotifyApiConfig, ConfigError> {
+        let client_id = self.client_id.trim();
+        if client_id.is_empty() {
+            return Err(ConfigError::EmptySpotifyApiClientId);
+        }
+        let redirect_uri = self.redirect_uri.trim();
+        let valid_redirect = url::Url::parse(redirect_uri).ok().is_some_and(|url| {
+            let is_loopback = match url.host() {
+                Some(url::Host::Ipv4(address)) => address.is_loopback(),
+                Some(url::Host::Ipv6(address)) => address.is_loopback(),
+                Some(url::Host::Domain(_)) | None => false,
+            };
+            url.scheme() == "http" && is_loopback && url.port().is_some() && url.path() != "/"
+        });
+        if !valid_redirect {
+            return Err(ConfigError::InvalidSpotifyApiRedirectUri(self.redirect_uri));
+        }
+
+        Ok(SpotifyApiConfig {
+            client_id: client_id.to_owned(),
+            redirect_uri: redirect_uri.to_owned(),
+            token_cache: self.token_cache,
+        })
+    }
+}
+
+fn default_spotify_api_redirect_uri() -> String {
+    DEFAULT_SPOTIFY_API_REDIRECT_URI.to_owned()
 }
 
 fn validate_startup_uri(value: Option<String>) -> Result<Option<String>, ConfigError> {
@@ -469,6 +549,60 @@ startup_uri = "https://example.com/playlist"
             error,
             ConfigError::InvalidStartupUri(uri) if uri == "https://example.com/playlist"
         ));
+    }
+
+    #[test]
+    fn configures_spotify_catalogue_access() {
+        let config = Config::from_toml(
+            r#"
+version = 1
+
+[spotify_api]
+client_id = "0123456789abcdef"
+token_cache = "/tmp/spotify-tui-token.json"
+"#,
+        )
+        .expect("Spotify API configuration should resolve");
+
+        let spotify_api = config
+            .spotify_api()
+            .expect("Spotify API should be configured");
+        assert_eq!(spotify_api.client_id(), "0123456789abcdef");
+        assert_eq!(spotify_api.redirect_uri(), "http://127.0.0.1:8989/callback");
+        assert_eq!(
+            spotify_api.token_cache(),
+            Some(Path::new("/tmp/spotify-tui-token.json"))
+        );
+    }
+
+    #[test]
+    fn spotify_catalogue_requires_a_loopback_redirect() {
+        let error = Config::from_toml(
+            r#"
+version = 1
+
+[spotify_api]
+client_id = "0123456789abcdef"
+redirect_uri = "https://example.com/callback"
+"#,
+        )
+        .expect_err("remote callbacks should be rejected");
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidSpotifyApiRedirectUri(_)
+        ));
+
+        Config::from_toml(
+            r#"
+version = 1
+
+[spotify_api]
+client_id = "0123456789abcdef"
+redirect_uri = "http://[::1]:8989/callback"
+"#,
+        )
+        .expect("numeric IPv6 loopback should be accepted");
     }
 
     #[test]

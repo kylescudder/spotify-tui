@@ -3,6 +3,48 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use crate::app::{Command, SeekDirection};
+use crate::browser::{BrowserCommand, BrowserMode};
+
+pub fn browser_command_for_key(key: KeyEvent, mode: BrowserMode) -> Option<BrowserCommand> {
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(BrowserCommand::Quit);
+    }
+
+    match mode {
+        BrowserMode::Closed => match key.code {
+            KeyCode::Char('/') if key.modifiers.is_empty() => Some(BrowserCommand::OpenSearch),
+            _ => None,
+        },
+        BrowserMode::Editing => match key.code {
+            KeyCode::Esc => Some(BrowserCommand::Close),
+            KeyCode::Enter => Some(BrowserCommand::Submit),
+            KeyCode::Backspace => Some(BrowserCommand::Backspace),
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(BrowserCommand::Insert(character))
+            }
+            _ => None,
+        },
+        BrowserMode::Page => match key.code {
+            KeyCode::Char('q') => Some(BrowserCommand::Quit),
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => Some(BrowserCommand::Back),
+            KeyCode::Char('/') => Some(BrowserCommand::OpenSearch),
+            KeyCode::Up | KeyCode::Char('k') => Some(BrowserCommand::Previous),
+            KeyCode::Down | KeyCode::Char('j') => Some(BrowserCommand::Next),
+            KeyCode::Enter => Some(BrowserCommand::Activate),
+            _ => None,
+        },
+        BrowserMode::Waiting => match key.code {
+            KeyCode::Char('q') => Some(BrowserCommand::Quit),
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => Some(BrowserCommand::Back),
+            KeyCode::Char('/') => Some(BrowserCommand::OpenSearch),
+            _ => None,
+        },
+    }
+}
 
 pub fn command_for_key(key: KeyEvent) -> Option<Command> {
     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
@@ -115,6 +157,57 @@ mod tests {
             assert_eq!(
                 command_for_key(KeyEvent::new(code, KeyModifiers::NONE)),
                 Some(Command::AdjustVolume(amount))
+            );
+        }
+    }
+
+    #[test]
+    fn slash_opens_search_from_now_playing() {
+        assert_eq!(
+            browser_command_for_key(
+                KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+                BrowserMode::Closed,
+            ),
+            Some(BrowserCommand::OpenSearch)
+        );
+    }
+
+    #[test]
+    fn search_editor_accepts_text_and_submission() {
+        assert_eq!(
+            browser_command_for_key(
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+                BrowserMode::Editing,
+            ),
+            Some(BrowserCommand::Insert('q'))
+        );
+        assert_eq!(
+            browser_command_for_key(
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                BrowserMode::Editing,
+            ),
+            Some(BrowserCommand::Backspace)
+        );
+        assert_eq!(
+            browser_command_for_key(
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                BrowserMode::Editing,
+            ),
+            Some(BrowserCommand::Submit)
+        );
+    }
+
+    #[test]
+    fn catalogue_pages_use_vim_navigation_and_enter() {
+        for (code, command) in [
+            (KeyCode::Char('j'), BrowserCommand::Next),
+            (KeyCode::Char('k'), BrowserCommand::Previous),
+            (KeyCode::Char('h'), BrowserCommand::Back),
+            (KeyCode::Enter, BrowserCommand::Activate),
+        ] {
+            assert_eq!(
+                browser_command_for_key(KeyEvent::new(code, KeyModifiers::NONE), BrowserMode::Page),
+                Some(command)
             );
         }
     }

@@ -3,11 +3,12 @@ use std::ffi::OsString;
 use thiserror::Error;
 
 pub const HELP: &str = "\
-Spotify TUI — local spotifyd controller
+Spotify TUI — local-first terminal Spotify interface
 
 Usage:
   spotify-tui                 Start the terminal interface
   spotify-tui auth [-- ARGS]  Authenticate spotifyd, forwarding optional ARGS
+  spotify-tui catalog-auth    Authenticate Spotify catalogue access
   spotify-tui --help          Show this help
   spotify-tui --version       Show the installed version
 ";
@@ -18,6 +19,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub enum LaunchMode {
     Tui,
     Authenticate { spotifyd_arguments: Vec<OsString> },
+    CatalogAuthenticate,
     Help,
     Version,
 }
@@ -47,6 +49,13 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Launc
         return Ok(LaunchMode::Authenticate { spotifyd_arguments });
     }
 
+    if command == "catalog-auth" || command == "api-auth" {
+        if arguments.next().is_some() {
+            return Err(CliError::UnexpectedArguments(command));
+        }
+        return Ok(LaunchMode::CatalogAuthenticate);
+    }
+
     Err(CliError::UnknownCommand(command))
 }
 
@@ -54,6 +63,8 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Launc
 pub enum CliError {
     #[error("unknown command '{}'; run spotify-tui --help", .0.to_string_lossy())]
     UnknownCommand(OsString),
+    #[error("command '{}' does not accept arguments", .0.to_string_lossy())]
+    UnexpectedArguments(OsString),
 }
 
 #[cfg(test)]
@@ -102,6 +113,24 @@ mod tests {
             LaunchMode::Version
         );
         assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn catalogue_authentication_has_a_dedicated_command() {
+        assert_eq!(
+            parse_args([OsString::from("catalog-auth")]).unwrap(),
+            LaunchMode::CatalogAuthenticate
+        );
+        assert_eq!(
+            parse_args([OsString::from("api-auth")]).unwrap(),
+            LaunchMode::CatalogAuthenticate
+        );
+        assert_eq!(
+            parse_args([OsString::from("catalog-auth"), OsString::from("unexpected"),]),
+            Err(CliError::UnexpectedArguments(OsString::from(
+                "catalog-auth"
+            )))
+        );
     }
 
     #[test]

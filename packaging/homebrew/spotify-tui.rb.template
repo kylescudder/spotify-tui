@@ -1,5 +1,5 @@
 class SpotifyTui < Formula
-  desc "Local-first terminal Spotify controller powered by spotifyd"
+  desc "Local-first terminal Spotify interface powered by spotifyd"
   homepage "https://github.com/@REPOSITORY@"
   url "https://github.com/@REPOSITORY@/releases/download/v@VERSION@/spotify-tui-source.tar.gz"
   sha256 "@SOURCE_SHA256@"

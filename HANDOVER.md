@@ -2,9 +2,10 @@
 
 ## Objective
 
-Build a polished Spotify now-playing TUI that remains useful when Spotify's Web
-API is rate-limited or changes. The first release is a local controller for
-`spotifyd`; it does not browse Spotify through the Web API.
+Build a polished, keyboard-first Spotify TUI that remains useful when Spotify's
+Web API is unavailable, rate-limited, or changes. Playback is always local
+through `spotifyd`; optional Spotify Web API catalogue access supplies search
+and browse data without becoming a requirement for the now-playing controller.
 
 The target machine is Kyle's NixOS workstation (`stevie`) using Hyprland,
 Ghostty, PipeWire, Home Manager, and the dotfiles repository at
@@ -34,23 +35,31 @@ Version 1 must provide:
 - Keyboard-first navigation, including Vim-style bindings.
 - User customization through a TOML config file, including configurable colour
   schemes, with polished defaults when no config is present.
-- First-run account onboarding delegated to `spotifyd authenticate`; the TUI
-  must never collect, inspect, or store Spotify credentials itself.
+- First-run playback onboarding delegated to `spotifyd authenticate`; the TUI
+  must never collect a password or inspect/store Spotifyd's playback
+  credential.
 - Phone-free Linux session bootstrap: activate an authenticated Spotifyd over
   its local D-Bus control interface, preserving a resumable context or opening
   an optional configured startup Spotify URI.
+- Optional catalogue search across artists, albums, tracks, and playlists;
+  artist pages listing releases; album pages listing tracks; and local playback
+  of a selected track or playlist through its Spotify URI.
+- Separate catalogue onboarding through Authorization Code with PKCE, using a
+  user-supplied Spotify developer client ID and a loopback redirect. Never ask
+  for or store a client secret or Spotify password.
 - Clear empty, disconnected, paused, loading, and error states.
 - A visually intentional layout that works at common terminal sizes.
 
-Version 1 does not include search, library browsing, playlist editing, lyrics,
-recommendations, or direct Spotify Web API authentication. These are later,
-optional modules and must not be required for the controller to start or work.
+Version 1 does not include saved-library browsing, playlist editing, lyrics, or
+recommendations. Catalogue browsing is optional and must never be required for
+the controller to start or work.
 
 ## Platform and reliability seams
 
-Keep `PlaybackSource`, `ArtworkSource`, and service lifecycle control
-platform-neutral. Platform adapters must produce the same normalized events and
-commands so `AppState` and the view contain no operating-system branches.
+Keep `PlaybackSource`, `ArtworkSource`, `CatalogSource`, and service lifecycle
+control platform-neutral. Platform adapters must produce the same normalized
+events and commands so `AppState` and the view contain no operating-system
+branches.
 
 On Linux, use the session MPRIS interface exposed by `spotifyd` as the source of
 truth for playback state and controls. The existing config already sets:
@@ -111,6 +120,8 @@ Keep these seams explicit:
 platform player adapter -> PlaybackSource -> AppState -> Ratatui view
 art URL/cache           -> ArtworkSource -------^
 keyboard                -> Command dispatcher -> PlaybackSource
+Spotify Web API         -> CatalogSource -> BrowserState -> Ratatui view
+selected Spotify URI    ----------------> PlaybackSource
 ```
 
 The view must depend on `AppState`, not D-Bus, HTTP, or subprocess handles. This
@@ -118,17 +129,25 @@ is the main test seam.
 
 ## Spotify API constraint
 
-Creating another conventional Web API client would inherit Spotify's current
-Development Mode restrictions. Spotify applies per-developer quota buckets,
-returns `429` for quota/rate limiting, limits Development Mode apps to allowlisted
-users, and changed or removed endpoints in 2026. If Web API features are added,
-they must be lazy, cached, optional, and resilient to `403`/`429` responses.
+Catalogue search uses a user-supplied Spotify developer client ID and
+Authorization Code with PKCE. The refresh token is stored in the user's state
+directory with owner-only Unix permissions; no client secret is accepted.
+`CatalogSource` normalizes Search, artist releases, and album tracks while the
+worker owns HTTP and token refresh away from the render/input thread. Selecting
+playable content passes its URI to `PlaybackSource`, so the Web API never
+streams audio or becomes the playback transport.
+
+Spotify's Development Mode restrictions still apply. Spotify uses
+per-developer quota buckets, returns `429` for quota/rate limiting, limits apps
+to five allowlisted users, and changed or removed endpoints in 2026. Catalogue
+features must remain lazy, optional, and resilient to `403`/`429` responses.
 
 Primary references:
 
 - https://developer.spotify.com/documentation/web-api/concepts/quota-modes
 - https://developer.spotify.com/documentation/web-api/concepts/rate-limits
-- https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide
+- https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
+- https://developer.spotify.com/documentation/web-api/references/changes/february-2026
 
 ## Relevant existing files
 
@@ -202,14 +221,30 @@ startup URI loading, manual retry, and daemon recovery; a private-D-Bus test
 covers activation and rediscovery across process-unique names. The artwork
 vertical slice is also implemented behind `ArtworkSource`, including bounded
 fetch/decode, in-memory caching, stale-result rejection, Kitty rendering, a
-half-block fallback, and normal/narrow layout tests. The remaining work is:
+half-block fallback, and normal/narrow layout tests. The catalogue vertical
+slice is implemented behind `CatalogSource`: PKCE authentication and token
+refresh, typed search results, artist releases, album tracks, keyboard history,
+stale-result rejection, and URI handoff to local playback all have deterministic
+tests. The remaining work is:
 
 Live validation on `stevie` has confirmed Spotifyd OAuth, phone-free activation,
 automatic recovery after restarting Spotifyd, and a successful `nix run .`
 build. Keep those paths in regression coverage, but they are no longer open
 implementation tasks.
 
-1. Prove and implement the macOS and Windows platform adapters.
+1. Perform live catalogue acceptance on `stevie`.
+   - Create/configure a Spotify developer app, register the exact loopback
+     redirect, run `spotify-tui catalog-auth`, and confirm refresh-token reuse
+     after restarting the TUI.
+   - Search for an artist, open an artist page, open an album, and play a track;
+     also play a direct track and playlist search result.
+   - Confirm cancellation, an unallowlisted user (`403`), quota exhaustion
+     (`429`), network loss, empty results, and token-cache corruption all remain
+     recoverable without disturbing local playback.
+   - Check the search/editor/list layouts at 80x24, the normal workspace size,
+     and the documented narrow fallback.
+
+2. Prove and implement the macOS and Windows platform adapters.
    - Prototype non-Web-API playback/control transports against Spotifyd on each
      platform, record the selected designs, and implement them behind
      `PlaybackSource`.
@@ -222,7 +257,7 @@ implementation tasks.
    - Verify the Windows x86_64 build in CI and on a clean Windows machine before
      publishing its installer.
 
-2. Harden the complete runtime and perform live acceptance on Linux, macOS, and
+3. Harden the complete runtime and perform live acceptance on Linux, macOS, and
    Windows.
    - Exercise a fresh Spotifyd OAuth approval, cancellation, service restart,
      network loss, pause/resume, daemon loss, and daemon reconnection.
@@ -236,7 +271,7 @@ implementation tasks.
      generated user startup definition, preserves an existing config, and can be
      omitted explicitly without affecting the Spotify TUI installation.
 
-3. Activate and prove the release infrastructure after the external repositories
+4. Activate and prove the release infrastructure after the external repositories
    exist.
    - Run the non-publishing GitHub Actions rehearsal and require every Linux,
      macOS, Windows, Nix, installer, and Homebrew job to pass.
@@ -245,7 +280,7 @@ implementation tasks.
      `kylescudder/homebrew-tap` without direct writes to its default branch.
    - Do not create a public product tag until platform runtime acceptance passes.
 
-4. Cut over the workstation only after acceptance.
+5. Cut over the workstation only after acceptance.
    - Update the dotfiles/Home Manager package and Hyprland workspace-10 launch
      command, perform a clean NixOS rebuild, and retain a simple rollback to
      `spotify_player` until the new setup has been used successfully.
@@ -264,6 +299,12 @@ remaining implementation:
 - Network loss and restarting Spotifyd do not crash, freeze, or leave stale
   state or artwork onscreen.
 - Missing or invalid artwork degrades cleanly.
+- An authenticated catalogue user can search artists, albums, tracks, and
+  playlists; traverse artist → release → track; start the selected URI through
+  local Spotifyd; and return through browser history without blocking playback.
+- Catalogue auth cancellation, token refresh, `403`, `429`, network failure,
+  and a missing or corrupt cache produce actionable errors and never prevent the
+  local controller from launching.
 - The complete UI is usable in Ghostty at 80x24 and the normal workspace size,
   in a supported macOS terminal, in Windows Terminal, and in the documented
   narrow fallback.

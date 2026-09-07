@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     artwork::Artwork,
+    browser::BrowserState,
     playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata},
 };
 
@@ -104,6 +105,7 @@ pub struct AppState {
     connection: ConnectionState,
     playback: Option<PlaybackState>,
     artwork: ArtworkState,
+    browser: BrowserState,
     track_revision: u64,
     should_quit: bool,
 }
@@ -114,6 +116,7 @@ impl Default for AppState {
             connection: ConnectionState::Connecting,
             playback: None,
             artwork: ArtworkState::Unavailable,
+            browser: BrowserState::default(),
             track_revision: 0,
             should_quit: false,
         }
@@ -131,6 +134,14 @@ impl AppState {
 
     pub const fn artwork(&self) -> &ArtworkState {
         &self.artwork
+    }
+
+    pub const fn browser(&self) -> &BrowserState {
+        &self.browser
+    }
+
+    pub const fn browser_mut(&mut self) -> &mut BrowserState {
+        &mut self.browser
     }
 
     pub const fn track_revision(&self) -> u64 {

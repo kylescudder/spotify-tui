@@ -17,6 +17,9 @@ use spotify_tui::{
     app::{AppEvent, AppState, Command},
     artwork::{ArtworkEvent, ArtworkRenderer, ArtworkRuntime},
     auth::{self, AuthOutcome},
+    browser::{BrowserEffect, BrowserMode},
+    catalog::{CatalogEvent, CatalogRuntime},
+    catalog_auth,
     cli::{self, LaunchMode},
     config::{Config, Theme},
     input,
@@ -33,6 +36,7 @@ fn main() -> ExitCode {
         Ok(LaunchMode::Authenticate { spotifyd_arguments }) => {
             report_result(run_auth_command(&spotifyd_arguments))
         }
+        Ok(LaunchMode::CatalogAuthenticate) => report_result(run_catalog_auth_command()),
         Ok(LaunchMode::Help) => {
             print!("{}", cli::HELP);
             ExitCode::SUCCESS
@@ -66,14 +70,42 @@ fn run_auth_command(arguments: &[OsString]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_catalog_auth_command() -> Result<(), Box<dyn Error>> {
+    let config = Config::load()?;
+    let spotify_api = config.spotify_api().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Spotify catalogue is not configured; add [spotify_api] client_id to config.toml",
+        )
+    })?;
+    println!("Starting Spotify catalogue authentication…");
+    let path = catalog_auth::authenticate(spotify_api)?;
+    println!(
+        "Spotify catalogue authentication complete. Token saved to {}.",
+        path.display()
+    );
+    Ok(())
+}
+
 fn run_tui_app() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
     let mut app = AppState::default();
     let playback = PlaybackRuntime::start(config.startup_uri().map(str::to_owned))?;
     let artwork = ArtworkRuntime::start()?;
+    let catalog = config
+        .spotify_api()
+        .cloned()
+        .map(CatalogRuntime::start)
+        .transpose()?;
 
     loop {
-        match run_tui_session(&mut app, config.theme(), &playback, &artwork)? {
+        match run_tui_session(
+            &mut app,
+            config.theme(),
+            &playback,
+            &artwork,
+            catalog.as_ref(),
+        )? {
             SessionOutcome::Quit => return Ok(()),
             SessionOutcome::Authenticate => {
                 println!("Starting Spotifyd authentication…");
@@ -114,6 +146,7 @@ fn run_tui_session(
     theme: &Theme,
     playback: &PlaybackRuntime,
     artwork: &ArtworkRuntime,
+    catalog: Option<&CatalogRuntime>,
 ) -> io::Result<SessionOutcome> {
     let mut terminal = start_terminal()?;
     let mut artwork_renderer = match ArtworkRenderer::detect(theme) {
@@ -129,6 +162,7 @@ fn run_tui_session(
         theme,
         playback,
         artwork,
+        catalog,
         &mut artwork_renderer,
     );
     let restore_result = restore_terminal(&mut terminal);
@@ -172,19 +206,60 @@ fn run(
     theme: &Theme,
     playback: &PlaybackRuntime,
     artwork: &ArtworkRuntime,
+    catalog: Option<&CatalogRuntime>,
     artwork_renderer: &mut ArtworkRenderer,
 ) -> io::Result<SessionOutcome> {
     loop {
         drain_playback_events(app, playback, artwork);
         drain_artwork_events(app, artwork);
+        drain_catalog_events(app, catalog);
         artwork_renderer.sync(app.track_revision(), app.artwork());
         terminal.draw(|frame| ui::render(frame, app, theme, artwork_renderer))?;
 
         if event::poll(Duration::from_millis(250))?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && let Some(command) = input::command_for_key(key)
         {
+            let browser_mode = app.browser().mode();
+            if let Some(command) = input::browser_command_for_key(key, browser_mode) {
+                match app.browser_mut().apply(command) {
+                    BrowserEffect::None => {}
+                    BrowserEffect::Quit => {
+                        app.reduce(AppEvent::QuitRequested);
+                        return Ok(SessionOutcome::Quit);
+                    }
+                    BrowserEffect::Play(uri) => {
+                        dispatch(app, playback, PlaybackCommand::OpenUri(uri));
+                    }
+                    BrowserEffect::Fetch {
+                        request_id,
+                        request,
+                    } => {
+                        if let Some(catalog) = catalog {
+                            if let Err(error) = catalog.fetch(request_id, request) {
+                                app.browser_mut().resolve(CatalogEvent::Failed {
+                                    request_id,
+                                    message: error.to_string(),
+                                });
+                            }
+                        } else {
+                            app.browser_mut().resolve(CatalogEvent::Failed {
+                                request_id,
+                                message: "Spotify catalogue is not configured. Add [spotify_api] client_id to config.toml, then run spotify-tui catalog-auth.".to_owned(),
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if browser_mode != BrowserMode::Closed {
+                continue;
+            }
+
+            let Some(command) = input::command_for_key(key) else {
+                continue;
+            };
             match command {
                 Command::Quit => {
                     app.reduce(AppEvent::QuitRequested);
@@ -268,6 +343,15 @@ fn drain_artwork_events(app: &mut AppState, artwork: &ArtworkRuntime) {
                 message,
             },
         });
+    }
+}
+
+fn drain_catalog_events(app: &mut AppState, catalog: Option<&CatalogRuntime>) {
+    let Some(catalog) = catalog else {
+        return;
+    };
+    while let Some(event) = catalog.try_event() {
+        app.browser_mut().resolve(event);
     }
 }
 

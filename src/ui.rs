@@ -2,13 +2,15 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Text},
-    widgets::{Block, Borders, Gauge, Paragraph, Wrap},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::{
     app::{AppState, ArtworkState, ConnectionState},
     artwork::ArtworkRenderer,
+    browser::BrowserView,
+    catalog::CatalogItemKind,
     config::Theme,
 };
 
@@ -37,6 +39,11 @@ pub fn render(
     let inner = block.inner(area);
 
     frame.render_widget(block, area);
+
+    if !matches!(state.browser().view(), BrowserView::Closed) {
+        render_browser(frame, inner, state.browser().view(), theme);
+        return;
+    }
 
     if let Some(playback) = state.playback()
         && matches!(state.connection(), ConnectionState::Connected)
@@ -196,18 +203,175 @@ fn render_playback(
         progress_area,
     );
 
-    let help = if area.width >= 76 {
-        "Space play/pause · p/n track · h/l or ←/→ seek · j/k or ↓/↑ volume · q quit"
+    let help = if area.width >= 90 {
+        "/ search · Space play/pause · p/n track · h/l seek · j/k volume · q quit"
+    } else if area.width >= 64 {
+        "/ search · Space play/pause · p/n track · h/l seek · q quit"
     } else if area.width >= 48 {
-        "Space play/pause · p/n track · h/l seek · j/k volume · q quit"
+        "/ search · Space play · p/n track · q quit"
     } else {
-        "Space play · h/l seek · j/k vol · q"
+        "/ search · Space play · q"
     };
     frame.render_widget(
         Paragraph::new(help)
             .style(Style::default().fg(theme.muted()))
             .alignment(Alignment::Center),
         help_area,
+    );
+}
+
+fn render_browser(frame: &mut Frame, area: Rect, view: &BrowserView, theme: &Theme) {
+    match view {
+        BrowserView::Closed => {}
+        BrowserView::Editing { query } => render_search_editor(frame, area, query, theme),
+        BrowserView::Loading { label } => {
+            render_browser_message(
+                frame,
+                area,
+                label,
+                theme.warning(),
+                "Esc back · q quit",
+                theme,
+            );
+        }
+        BrowserView::Error { message } => {
+            render_browser_message(
+                frame,
+                area,
+                message,
+                theme.error(),
+                "Esc back · / new search · q quit",
+                theme,
+            );
+        }
+        BrowserView::Page { page, selected } => {
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Fill(1),
+                    Constraint::Length(1),
+                ])
+                .margin(1)
+                .split(area);
+            let heading = Text::from(vec![
+                Line::from(page.title()).style(
+                    Style::default()
+                        .fg(theme.accent())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::from(page.subtitle()).style(Style::default().fg(theme.muted())),
+            ]);
+            frame.render_widget(Paragraph::new(heading).wrap(Wrap { trim: true }), layout[0]);
+
+            if page.items().is_empty() {
+                frame.render_widget(
+                    Paragraph::new("No results")
+                        .style(Style::default().fg(theme.muted()))
+                        .alignment(Alignment::Center),
+                    layout[1],
+                );
+            } else {
+                let items = page.items().iter().map(|item| {
+                    let tag = match item.kind() {
+                        CatalogItemKind::Artist => "[Artist]",
+                        CatalogItemKind::Album => "[Album]",
+                        CatalogItemKind::Track => "[Track]",
+                        CatalogItemKind::Playlist => "[Playlist]",
+                    };
+                    let mut spans = vec![
+                        Span::styled(format!("{tag:<11}"), Style::default().fg(theme.muted())),
+                        Span::styled(
+                            item.name().to_owned(),
+                            Style::default().fg(theme.foreground()),
+                        ),
+                    ];
+                    if !item.detail().is_empty() {
+                        spans.push(Span::styled(
+                            format!(" — {}", item.detail()),
+                            Style::default().fg(theme.muted()),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
+                });
+                let list = List::new(items).highlight_symbol("› ").highlight_style(
+                    Style::default()
+                        .fg(theme.accent())
+                        .bg(theme.border())
+                        .add_modifier(Modifier::BOLD),
+                );
+                let mut list_state = ListState::default().with_selected(Some(*selected));
+                frame.render_stateful_widget(list, layout[1], &mut list_state);
+            }
+
+            let help = if area.width >= 70 {
+                "j/k or ↑/↓ navigate · Enter open/play · / search · Esc back · q quit"
+            } else {
+                "j/k navigate · Enter open · / search · Esc back"
+            };
+            frame.render_widget(
+                Paragraph::new(help)
+                    .style(Style::default().fg(theme.muted()))
+                    .alignment(Alignment::Center),
+                layout[2],
+            );
+        }
+    }
+}
+
+fn render_search_editor(frame: &mut Frame, area: Rect, query: &str, theme: &Theme) {
+    let centered = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(5),
+            Constraint::Fill(1),
+        ])
+        .margin(1)
+        .split(area)[1];
+    let input = Paragraph::new(format!("> {query}█"))
+        .style(Style::default().fg(theme.foreground()))
+        .block(
+            Block::new()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.accent()))
+                .title(" Search Spotify "),
+        );
+    frame.render_widget(input, centered);
+    let help_area = Rect::new(centered.x, centered.y.saturating_add(3), centered.width, 1);
+    frame.render_widget(
+        Paragraph::new("Enter search · Esc close")
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center),
+        help_area,
+    );
+}
+
+fn render_browser_message(
+    frame: &mut Frame,
+    area: Rect,
+    message: &str,
+    color: Color,
+    help: &str,
+    theme: &Theme,
+) {
+    let centered = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(3),
+            Constraint::Fill(1),
+        ])
+        .margin(1)
+        .split(area)[1];
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(message).style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Line::from(help).style(Style::default().fg(theme.muted())),
+        ]))
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true }),
+        centered,
     );
 }
 
@@ -381,6 +545,8 @@ mod tests {
     use crate::{
         app::{AppEvent, ArtworkState},
         artwork::Artwork,
+        browser::BrowserCommand,
+        catalog::{CatalogEvent, CatalogItem, CatalogItemKind, CatalogPage},
         config::Config,
         playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata},
     };
@@ -712,5 +878,81 @@ background = "#010203"
             "┌"
         );
         assert!(!rendered_text(&terminal).contains("Artwork"));
+    }
+
+    #[test]
+    fn search_editor_replaces_now_playing_and_shows_the_query() {
+        let mut state = AppState::default();
+        state.browser_mut().apply(BrowserCommand::OpenSearch);
+        for character in "enter shikari".chars() {
+            state.browser_mut().apply(BrowserCommand::Insert(character));
+        }
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test backend is infallible");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        let text = rendered_text(&terminal);
+        assert!(text.contains("Search Spotify"));
+        assert!(text.contains("> enter shikari█"));
+        assert!(text.contains("Enter search"));
+    }
+
+    #[test]
+    fn catalogue_page_renders_typed_navigable_results() {
+        let mut state = AppState::default();
+        state.browser_mut().apply(BrowserCommand::OpenSearch);
+        state.browser_mut().apply(BrowserCommand::Insert('x'));
+        state.browser_mut().apply(BrowserCommand::Submit);
+        state.browser_mut().resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: CatalogPage::Search {
+                query: "enter shikari".to_owned(),
+                items: vec![
+                    CatalogItem::new(
+                        CatalogItemKind::Artist,
+                        "artist",
+                        "spotify:artist:artist",
+                        "Enter Shikari",
+                        "Artist",
+                        None,
+                    ),
+                    CatalogItem::new(
+                        CatalogItemKind::Track,
+                        "track",
+                        "spotify:track:track",
+                        "Sorry You're Not a Winner",
+                        "Enter Shikari • 3:48",
+                        None,
+                    ),
+                ],
+            },
+        });
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+        let mut terminal =
+            Terminal::new(TestBackend::new(100, 28)).expect("test backend is infallible");
+
+        terminal
+            .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+
+        let text = rendered_text(&terminal);
+        for expected in [
+            "Search — enter shikari",
+            "[Artist]",
+            "Enter Shikari",
+            "[Track]",
+            "Sorry You're Not a Winner",
+            "Enter open/play",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+        }
     }
 }

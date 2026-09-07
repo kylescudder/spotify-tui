@@ -1,10 +1,12 @@
 # Spotify TUI
 
-A local-first terminal Spotify controller powered by `spotifyd`. The current
-Linux runtime uses the session MPRIS interface for playback and controls, so it
-does not require Spotify Web API access. Version 1 targets a Nix flake on Linux
-and Homebrew on macOS, plus direct POSIX and Windows installers. The macOS and
-Windows playback adapters are still to be implemented.
+A local-first terminal Spotify interface powered by `spotifyd`. Playback,
+controls, now-playing metadata, and artwork use the local session MPRIS
+interface and work without Spotify Web API access. Optional catalogue access
+adds search, artist releases, album tracks, and play-from-search through the
+Spotify Web API. Version 1 targets a Nix flake on Linux and Homebrew on macOS,
+plus direct POSIX and Windows installers. The macOS and Windows playback
+adapters are still to be implemented.
 
 The project is under active development. Linux playback uses Spotifyd's MPRIS
 interface. macOS and Windows builds compile and have release packaging, but
@@ -203,6 +205,7 @@ placeholder.
 | `l` or `Right` | Seek forward 5 seconds. |
 | `j` or `Down` | Lower volume by 5%. |
 | `k` or `Up` | Raise volume by 5%. |
+| `/` | Open Spotify catalogue search. |
 | `a` | Leave the TUI temporarily and run Spotifyd authentication. |
 | `r` | Retry the local playback connection immediately. |
 | `q`, `Esc`, or `Ctrl-C` | Quit. |
@@ -220,9 +223,10 @@ device activation.
 
 ## Authentication
 
-Spotify TUI does not collect a Spotify password or implement its own OAuth
-client. Authentication is delegated to the installed `spotifyd` binary, which
-stores and owns the resulting credential.
+Spotify TUI never collects a Spotify password. Playback authentication is
+delegated to the installed `spotifyd` binary, which stores and owns that
+credential. The separate, optional catalogue flow described below uses
+browser-based PKCE and stores only its own Web API tokens.
 
 Authenticate once before the first normal launch:
 
@@ -276,6 +280,56 @@ integration is Linux-only. Homebrew on macOS and a PowerShell installer on
 Windows are version-1 distribution targets, but their playback and service
 adapters must be completed before those packages are called functionally
 complete.
+
+## Catalogue search
+
+Catalogue access is optional. Without it, the local now-playing screen and all
+playback controls continue to work. Once configured, press `/`, type a query,
+and press `Enter`. Results include artists, albums, tracks, and playlists.
+
+- `j`/`k` or the arrow keys move through results.
+- `Enter` opens an artist or album, or starts a selected track or playlist.
+- `Esc`, `h`, or `Left` returns to the previous page.
+- `/` starts a new search and `q` quits.
+
+An artist page shows the artist's album and single releases. Opening a release
+shows its tracks; selecting a track sends its Spotify URI through the same local
+Spotifyd playback path as the now-playing controls.
+
+Spotify does not provide a distributable, zero-configuration Web API client for
+this use case. Each installation therefore needs a Spotify developer app client
+ID. No client secret is used or stored.
+
+1. Create an app in the
+   [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. Add `http://127.0.0.1:8989/callback` as an exact redirect URI in that app.
+3. Put the app's client ID in `config.toml`:
+
+   ```toml
+   version = 1
+
+   [spotify_api]
+   client_id = "your-client-id"
+   ```
+
+4. Authenticate catalogue access once:
+
+   ```bash
+   spotify-tui catalog-auth
+   ```
+
+The command opens Spotify's browser approval page and uses Authorization Code
+with PKCE over the loopback redirect. It stores the resulting Web API access
+and refresh token at
+`$XDG_STATE_HOME/spotify-tui/spotify-api-token.json`, or
+`$HOME/.local/state/spotify-tui/spotify-api-token.json` when
+`XDG_STATE_HOME` is unset. The cache is created with owner-only permissions on
+Unix. Tokens refresh automatically.
+
+Spotify Development Mode currently limits an app to five explicitly allowlisted
+users and requires the app owner to have Spotify Premium. Add every intended
+test user in the dashboard. A `403` in search generally means the signed-in
+account is not allowlisted; a `429` means the app quota has been exceeded.
 
 ## Configuration
 
@@ -339,6 +393,32 @@ The value must be a Spotify URI such as `spotify:track:...`,
 opened only as part of activating Spotifyd, not every time the TUI starts while
 Spotifyd already has an active player. Leave it unset to preserve and resume
 Spotify's existing context.
+
+### Spotify catalogue options
+
+Catalogue options live under `[spotify_api]`. Omitting the entire section keeps
+catalogue access disabled while preserving every local playback feature.
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `client_id` | Yes | — | Public client ID from the Spotify Developer Dashboard. A client secret is neither accepted nor needed. |
+| `redirect_uri` | No | `"http://127.0.0.1:8989/callback"` | Exact loopback redirect registered for the Spotify app. It must use HTTP, a numeric loopback host, an explicit port, and a non-root path. |
+| `token_cache` | No | Platform state directory | Override the JSON token-cache path. On Unix the file is created with mode `0600`. |
+
+A complete example using every catalogue option is:
+
+```toml
+version = 1
+
+[spotify_api]
+client_id = "your-client-id"
+redirect_uri = "http://127.0.0.1:8989/callback"
+token_cache = "/home/alice/.local/state/spotify-tui/catalog-token.json"
+```
+
+The redirect URI in the config and Spotify dashboard must match exactly. After
+changing `client_id`, `redirect_uri`, or `token_cache`, run
+`spotify-tui catalog-auth` again.
 
 ### Custom theme options
 
