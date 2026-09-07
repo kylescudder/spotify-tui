@@ -20,10 +20,10 @@ Version 1 has three distribution routes:
   installer for Windows. Windows x86_64 is the initial Windows target; add other
   architectures only after CI and live validation exist for them.
 
-The current runtime is Linux-only. Compatible playback, service, and
-audio-capture implementations are therefore required before the macOS or
-Windows installers can be released; installing successfully without working
-controls is not considered platform support.
+Linux runtime acceptance is complete. The macOS and Windows playback adapter
+and packaging are implemented, but both still require clean-machine live
+acceptance before their installers can be released; installing successfully
+without working controls is not considered platform support.
 
 ## Product boundary
 
@@ -105,11 +105,19 @@ it through MPRIS after activation; otherwise preserve Spotify's existing
 resumable context.
 
 Spotifyd does not expose the Linux D-Bus/MPRIS interface on macOS or Windows.
-Before publishing installers for either platform, prototype and select
-maintainable local transports that provide equivalent metadata, progress,
-controls, volume, and reconnect behavior without making Spotify Web API access
-mandatory. Record those decisions before implementation; do not silently ship
-reduced, display-only builds.
+Those platforms therefore use the `local_control` feature patched into the
+pinned bundled Spotifyd 0.4.2 source. The daemon listens on an ephemeral
+loopback port, writes its current address and a random authentication token to
+the platform's per-user local-data directory, and rejects unauthenticated or
+non-loopback requests. `LocalControlPlaybackSource` discovers that endpoint on
+each request, so a daemon restart can change ports without restarting the TUI.
+It exposes the same normalized metadata, progress, artwork URL, activation,
+play/pause, previous/next, seek, volume, and exact-URI commands as Linux MPRIS.
+This transport never uses the Spotify Web API. The source patch and application
+script live in `packaging/spotifyd`; release builds and the Homebrew formula
+apply it to the pinned upstream commit before compiling the Rodio backend.
+Environment overrides exist for controlled tests, but normal users do not
+configure the endpoint or token.
 
 On Linux, album art comes from the MPRIS `mpris:artUrl` value. `ArtworkSource`
 enforces HTTPS, download timeouts, transfer and decode limits, downsizes large
@@ -213,15 +221,17 @@ The release infrastructure is implemented in this repository:
 - `scripts/install.sh` provides the HTTPS-only `curl | sh` path for Linux/macOS;
   `scripts/install.ps1` provides the PowerShell path for Windows. Both select the
   matching release, support pinned versions and user-writable destinations,
-  verify SHA-256 before replacing binaries, preserve existing dependencies and
-  configuration, install a pinned bundled Spotifyd when necessary, create
+  verify SHA-256 before replacing binaries, preserve existing configuration,
+  install a pinned bundled Spotifyd when necessary on Linux and always install
+  the compatible patched runtime on macOS/Windows, create
   platform user-startup definitions, and start them in the installation
   session. Install, upgrade, dependency opt-out, service, invalid-version, and
   tampered-artifact paths have offline tests.
 - Direct archives include Spotifyd's GPLv3 licence and publish its complete
-  corresponding 0.4.2 source beside the binaries. Linux consumes hash-pinned
-  upstream MPRIS builds; macOS and Windows build the portable Rodio backend from
-  pinned upstream commit `c5b94367014856a8c541dea565cbd332e034fb9e`.
+  corresponding 0.4.2 source plus the applied patch beside the binaries. Linux
+  consumes hash-pinned upstream MPRIS builds; macOS and Windows build the Rodio
+  backend plus local control from pinned upstream commit
+  `c5b94367014856a8c541dea565cbd332e034fb9e`.
 - `packaging/homebrew/spotify-tui.rb.template` is rendered with the tagged source
   checksum and defines the Spotifyd service used by the lifecycle adapter. It is
   styled, audited, installed, and tested on macOS. A successful tag opens a
@@ -264,40 +274,28 @@ stale-result rejection, and exact URI playback on the active Spotifyd device all
 have deterministic tests. Catalogue playback deliberately bypasses Spotifyd
 0.4.2's off-by-one MPRIS `OpenUri` implementation, while a Web API `404` falls
 back to the selected local URI instead of becoming a fatal player state. The
-remaining work is:
+macOS/Windows local-control adapter and patched Spotifyd packaging are also
+implemented, and controlled tests cover actionable catalogue `403`/`429`
+mapping. The remaining work is:
 
 Live validation on `stevie` has confirmed Spotifyd OAuth, phone-free activation,
 automatic recovery after restarting Spotifyd, a successful `nix run .` build,
 in-TUI catalogue authorization and search, artist/release navigation, responsive
-catalogue imagery, selected-release artwork, and instant revisiting of cached or
-prefetched images. Keep those paths in regression coverage, but they are no
-longer open implementation tasks.
+catalogue imagery, selected-release artwork, instant revisiting of cached or
+prefetched images, exact selected-track playback, cached authorization after a
+restart, and responsive layouts. Keep those paths in regression coverage, but
+they are no longer open implementation tasks.
 
-1. Perform live catalogue acceptance on `stevie`.
-   - Restart the TUI and confirm the cached refresh token permits searching
-     without another browser approval.
-   - Play a track from artist → release → track, then play a direct track and a
-     playlist search result. Confirm the selected track—not the following album
-     track—starts in each applicable path.
-   - Confirm cancellation, an unallowlisted user (`403`), quota exhaustion
-     (`429`), network loss, empty results, and token-cache corruption all remain
-     recoverable without disturbing local playback.
-   - Check the search/editor/list layouts at 80x24, the normal workspace size,
-     and the documented narrow fallback.
-
-2. Prove and implement the macOS and Windows platform adapters.
-   - Prototype non-Web-API playback/control transports against Spotifyd on each
-     platform, record the selected designs, and implement them behind
-     `PlaybackSource`.
-   - Live-test the implemented launchd/Homebrew and Windows lifecycle adapters
-     alongside the new playback adapters.
+1. Live-validate the macOS and Windows platform adapters.
+   - Live-test the Homebrew/launchd and Windows Startup lifecycle adapters
+     alongside the implemented local-control playback adapter.
    - Verify both Apple Silicon and Intel builds in CI; functional validation on
      real hardware is required for every architecture advertised by the formula.
    - Verify the Windows x86_64 build in CI and on a clean Windows machine before
      publishing its installer.
 
-3. Harden the complete runtime and perform live acceptance on Linux, macOS, and
-   Windows.
+2. Harden the complete runtime and perform remaining live acceptance on macOS
+   and Windows.
    - Exercise a fresh Spotifyd OAuth approval, cancellation, service restart,
      network loss, pause/resume, daemon loss, and daemon reconnection.
    - Test repeated track changes, missing art, small terminals, shutdown during
@@ -310,7 +308,7 @@ longer open implementation tasks.
      generated user startup definition, preserves an existing config, and can be
      omitted explicitly without affecting the Spotify TUI installation.
 
-4. Activate and prove the release infrastructure.
+3. Activate and prove the release infrastructure.
    - Run the non-publishing GitHub Actions rehearsal and require every Linux,
      macOS, Windows, Nix, installer, and Homebrew job to pass.
    - Configure the `HOMEBREW_TAP_TOKEN` integration and prove that a tagged
@@ -318,7 +316,7 @@ longer open implementation tasks.
      `kylescudder/homebrew-tap` without direct writes to its default branch.
    - Do not create a public product tag until platform runtime acceptance passes.
 
-5. Cut over the workstation only after acceptance.
+4. Cut over the workstation only after acceptance.
    - Update the dotfiles/Home Manager package and Hyprland workspace-10 launch
      command, perform a clean NixOS rebuild, and retain a simple rollback to
      `spotify_player` until the new setup has been used successfully.
@@ -356,15 +354,16 @@ remaining implementation:
   install, and smoke tests against the tagged source checksum.
 - The POSIX and PowerShell installers select the correct release artifact,
   reject checksum mismatches, install Spotifyd plus its licence without
-  elevation by default, preserve existing dependency state, and pass clean
+  elevation by default, preserve existing configuration, keep the required
+  macOS/Windows runtime compatible, and pass clean
   install/upgrade/version/service smoke tests on every advertised platform.
 - Formatting, Clippy, all unit/integration tests, and all packaging checks pass at
   the release commit.
 
-## Remaining Linux live validation commands
+## Recorded Linux live validation
 
-After pulling this branch, run these on `stevie` inside the graphical session
-with a track loaded in Spotifyd:
+These commands were used on `stevie` inside the graphical session with a track
+loaded in Spotifyd:
 
 ```bash
 playerctl -p spotifyd status
@@ -374,19 +373,15 @@ cargo run --bin spotify-tui-diagnose
 cargo run --bin spotify-tui
 ```
 
-In the TUI, verify Space, `p`/`n`, `h`/`l`, and `j`/`k`; then stop and restart
-Spotifyd while leaving the TUI open and confirm it disconnects and recovers.
-Cycle through ten tracks and confirm each artwork image replaces the previous
-one, then test at 80x24 and a narrower terminal. Missing or invalid artwork must
-show its placeholder without affecting controls. These commands should see the
-same player and normalized track state before the workstation cutover begins.
+The corresponding TUI checks covered Space, `p`/`n`, `h`/`l`, `j`/`k`, daemon
+restart recovery, track and artwork changes, catalogue navigation, and
+responsive layouts. Keep these commands as a reproducible regression recipe
+before the workstation cutover.
 
 Equivalent end-to-end validation from a fresh Homebrew install is required on a
-macOS test machine once the macOS playback transport has been selected. The
-Homebrew formula is not release-ready until that validation is documented and
-repeatable.
+macOS test machine. The Homebrew formula is not release-ready until that
+validation is documented and repeatable.
 
 Equivalent end-to-end validation from a fresh PowerShell-script installation is
-required on a clean Windows machine once the Windows playback transport has been
-selected. The Windows installer is not release-ready until that validation is
-documented and repeatable.
+required on a clean Windows machine. The Windows installer is not release-ready
+until that validation is documented and repeatable.

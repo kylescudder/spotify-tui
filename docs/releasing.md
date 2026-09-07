@@ -7,11 +7,10 @@ every release path before publishing anything.
 
 ## One-time repository setup
 
-1. Create `kylescudder/spotify-tui` and add it as `origin`. This checkout
-   currently has no remote, so the documented public installer URL is not live
-   yet. If a different canonical repository is chosen, update the Cargo, Nix,
-   and README metadata; generated installers use the actual Actions repository
-   automatically.
+1. Confirm `kylescudder/spotify-tui` is the protected canonical repository and
+   this checkout points `origin` at it. If a different canonical repository is
+   chosen, update the Cargo, Nix, and README metadata; generated installers use
+   the actual Actions repository automatically.
 2. Protect `main` and require the CI jobs before merging. Do not use
    `pull_request_target`; untrusted pull requests receive read-only repository
    permissions and no release secrets.
@@ -53,18 +52,20 @@ The Spotify TUI executables in the Linux archives are musl builds to avoid
 depending on a particular glibc version. Every direct archive also contains a
 pinned Spotifyd runtime, its GPLv3 licence, third-party notices, README, and
 example themes. Linux uses Spotifyd's upstream default binaries after checking
-hard-coded SHA-512 values. macOS and Windows build the portable Rodio backend
-from the exact upstream commit; upstream does not currently publish a Windows
-binary. The matching complete Spotifyd source archive is included in the same
-release and checked against a pinned SHA-256 value. Unlike the musl Spotify TUI
+hard-coded SHA-512 values. macOS and Windows apply the checked-in authenticated
+local-control patch and build it with the portable Rodio backend from the exact
+upstream commit; upstream does not currently publish a Windows binary. The
+matching complete Spotifyd source archive and applied patch are included in the
+same release and checked against a pinned SHA-256 value. Unlike the musl Spotify TUI
 binary, upstream's Linux Spotifyd binary remains dynamically linked to standard
 audio, D-Bus, OpenSSL, and system libraries; release smoke tests install and
 exercise those runtime libraries explicitly.
 
 Release-time generation replaces `@REPOSITORY@` in the installer sources with
-the actual GitHub repository. The installers preserve existing Spotifyd
-installations and configurations, install the bundled runtime when necessary,
-and test user-level startup integration without requiring elevated privileges.
+the actual GitHub repository. The installers preserve existing configurations;
+Linux can preserve a compatible existing Spotifyd, while macOS and Windows keep
+the required patched runtime upgraded. They test user-level startup integration
+without requiring elevated privileges.
 
 ## Publish a release
 
@@ -119,9 +120,9 @@ formula is tested from the exact staged source archive, uploaded with the GitHub
 release, and copied into the tap on a review branch. No workflow pushes an
 unreviewed checksum directly to the tap's default branch.
 
-Do not merge or advertise the macOS formula as functionally complete until the
-macOS playback, service, and audio adapters pass the product acceptance suite.
-The same rule applies to the Windows installer and its native adapters.
+Do not merge or advertise the macOS formula as functionally complete until its
+local-control playback, service, and audio paths pass the product acceptance
+suite. The same rule applies to the Windows installer.
 
 The clean-install rehearsal must also prove zero-command daemon startup: the
 Linux installer uses `systemctl --user enable --now`, the macOS installer

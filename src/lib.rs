@@ -7,6 +7,7 @@ pub mod catalog_auth;
 pub mod cli;
 pub mod config;
 pub mod input;
+pub mod local_control;
 pub mod playback;
 pub mod playback_runtime;
 pub mod spotifyd_lifecycle;

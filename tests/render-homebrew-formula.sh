@@ -17,8 +17,10 @@ sh "$repository_root/scripts/render-homebrew-formula.sh" \
 grep -F 'homepage "https://github.com/example/spotify-tui"' "$output" >/dev/null
 grep -F 'releases/download/v1.2.3/spotify-tui-source.tar.gz' "$output" >/dev/null
 grep -F "sha256 \"$checksum\"" "$output" >/dev/null
+grep -F 'resource "spotifyd" do' "$output" >/dev/null
+grep -F 'rodio_backend,local_control' "$output" >/dev/null
 grep -F 'service do' "$output" >/dev/null
-grep -F 'Formula["spotifyd"].opt_bin/"spotifyd"' "$output" >/dev/null
+grep -F 'run [opt_bin/"spotifyd", "--no-daemon"]' "$output" >/dev/null
 grep -F 'keep_alive true' "$output" >/dev/null
 
 if grep -E '@(REPOSITORY|VERSION|SOURCE_SHA256)@' "$output" >/dev/null; then

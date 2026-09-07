@@ -62,6 +62,48 @@ jobs:
       - name: Test
         run: cargo test --locked --all-targets --all-features
 
+  spotifyd-control:
+    name: Patched Spotifyd control server
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check out pinned Spotifyd source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: Spotifyd/spotifyd
+          ref: c5b94367014856a8c541dea565cbd332e034fb9e
+          path: spotifyd-upstream
+          persist-credentials: false
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libssl-dev pkg-config
+
+      - name: Install Rust components
+        run: rustup component add rustfmt
+
+      - name: Cache patched Spotifyd build data
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: spotifyd-control
+          workspaces: spotifyd-upstream -> target
+
+      - name: Add Spotify TUI local control to Spotifyd
+        run: sh packaging/spotifyd/apply-local-control.sh spotifyd-upstream
+
+      - name: Check patched source formatting
+        run: cargo fmt --manifest-path spotifyd-upstream/Cargo.toml --all --check
+
+      - name: Test patched control server
+        run: >-
+          cargo test --locked
+          --manifest-path spotifyd-upstream/Cargo.toml
+          --no-default-features --features local_control
+          local_control::tests
+
   nix:
     name: Nix flake (${{ matrix.os }})
     strategy:

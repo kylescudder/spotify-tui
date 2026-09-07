@@ -165,6 +165,11 @@ jobs:
           path: spotifyd-upstream
           persist-credentials: false
 
+      - name: Add Spotify TUI local control to Spotifyd
+        if: matrix.spotifyd_mode == 'build'
+        shell: bash
+        run: sh packaging/spotifyd/apply-local-control.sh spotifyd-upstream
+
       - name: Install Rust target
         run: |
           rustup target add ${{ matrix.target }}
@@ -180,6 +185,9 @@ jobs:
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           key: release-${{ matrix.target }}
+          workspaces: |
+            . -> target
+            spotifyd-upstream -> target
 
       - name: Lint and test release target
         run: |
@@ -206,10 +214,14 @@ jobs:
 
       - name: Build pinned Spotifyd runtime
         if: matrix.spotifyd_mode == 'build'
-        run: >-
-          cargo build --locked --release
-          --manifest-path spotifyd-upstream/Cargo.toml
-          --no-default-features --features rodio_backend
+        run: |
+          cargo test --locked \
+            --manifest-path spotifyd-upstream/Cargo.toml \
+            --no-default-features --features rodio_backend,local_control \
+            local_control::tests
+          cargo build --locked --release \
+            --manifest-path spotifyd-upstream/Cargo.toml \
+            --no-default-features --features rodio_backend,local_control
 
       - name: Package Unix binaries
         if: matrix.archive == 'tar'

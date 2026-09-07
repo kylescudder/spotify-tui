@@ -130,8 +130,11 @@ pub struct MprisPlaybackSource {
     connection: Connection,
 }
 
+#[cfg(target_os = "linux")]
+pub type PlatformPlaybackSource = MprisPlaybackSource;
+
 #[cfg(not(target_os = "linux"))]
-pub struct MprisPlaybackSource;
+pub type PlatformPlaybackSource = crate::local_control::LocalControlPlaybackSource;
 
 #[cfg(target_os = "linux")]
 impl MprisPlaybackSource {
@@ -205,13 +208,6 @@ impl MprisPlaybackSource {
             .build()
             .await
             .map_err(mpris_error)
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl MprisPlaybackSource {
-    pub async fn connect() -> Result<Self, PlaybackError> {
-        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
     }
 }
 
@@ -317,25 +313,6 @@ impl PlaybackSource for MprisPlaybackSource {
                 .map_err(mpris_error),
             PlaybackCommand::OpenUri(uri) => player.open_uri(&uri).await.map_err(mpris_error),
         }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl PlaybackSource for MprisPlaybackSource {
-    async fn activate(&self) -> Result<(), PlaybackError> {
-        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
-    }
-
-    async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
-        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
-    }
-
-    async fn wait_for_change(&self) -> Result<PlaybackSnapshot, PlaybackError> {
-        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
-    }
-
-    async fn execute(&self, _command: PlaybackCommand) -> Result<(), PlaybackError> {
-        Err(PlaybackError::UnsupportedPlatform(std::env::consts::OS))
     }
 }
 

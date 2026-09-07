@@ -1,10 +1,12 @@
 use std::process::ExitCode;
 
-use spotify_tui::playback::{MprisPlaybackSource, PlaybackError, PlaybackSnapshot, PlaybackSource};
+use spotify_tui::playback::{
+    PlatformPlaybackSource, PlaybackError, PlaybackSnapshot, PlaybackSource,
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    let source = match MprisPlaybackSource::connect().await {
+    let source = match PlatformPlaybackSource::connect().await {
         Ok(source) => source,
         Err(error) => return report_error(&error),
     };

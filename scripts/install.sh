@@ -227,7 +227,18 @@ done
 spotifyd_path=
 install_bundled_spotifyd=0
 if [ "$install_dependencies" -eq 1 ]; then
-  if [ "$force_dependencies" -eq 0 ] && [ -x "$install_dir/spotifyd" ]; then
+  if [ "$platform" = macos ]; then
+    [ -f "$temporary_dir/unpacked/spotifyd" ] || {
+      echo "install.sh: release archive is missing bundled spotifyd" >&2
+      exit 1
+    }
+    [ -f "$temporary_dir/unpacked/SPOTIFYD-LICENSE" ] || {
+      echo "install.sh: release archive is missing the Spotifyd licence" >&2
+      exit 1
+    }
+    spotifyd_path="$install_dir/spotifyd"
+    install_bundled_spotifyd=1
+  elif [ "$force_dependencies" -eq 0 ] && [ -x "$install_dir/spotifyd" ]; then
     spotifyd_path="$install_dir/spotifyd"
   elif [ "$force_dependencies" -eq 0 ] && command -v spotifyd >/dev/null 2>&1; then
     spotifyd_path=$(command -v spotifyd)
@@ -344,11 +355,10 @@ EOF
     launch_agents_dir=${SPOTIFY_TUI_LAUNCH_AGENTS_DIR:-"$HOME/Library/LaunchAgents"}
     service_path="$launch_agents_dir/io.github.kylescudder.spotifyd.plist"
     service_label=io.github.kylescudder.spotifyd
-    if [ ! -e "$service_path" ]; then
-      escaped_spotifyd_path=$(escape_xml "$spotifyd_path")
-      escaped_config_path=$(escape_xml "$config_path")
-      mkdir -p "$launch_agents_dir"
-      cat > "$service_path" <<EOF
+    escaped_spotifyd_path=$(escape_xml "$spotifyd_path")
+    escaped_config_path=$(escape_xml "$config_path")
+    mkdir -p "$launch_agents_dir"
+    cat > "$service_path" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -369,17 +379,15 @@ EOF
 </dict>
 </plist>
 EOF
-      echo "Created Spotifyd launch agent at $service_path"
-    fi
+    echo "Installed Spotifyd launch agent at $service_path"
     if command -v "$launchctl_program" >/dev/null 2>&1; then
       launch_domain="gui/$(id -u)"
       if "$launchctl_program" print "$launch_domain/$service_label" >/dev/null 2>&1; then
-        "$launchctl_program" kickstart -k "$launch_domain/$service_label" >/dev/null 2>&1 \
-          || echo "Could not restart the Spotifyd launch agent; Spotify TUI will retry automatically when it launches."
-      else
-        "$launchctl_program" bootstrap "$launch_domain" "$service_path" >/dev/null 2>&1 \
-          || echo "Could not start the Spotifyd launch agent; Spotify TUI will retry automatically when it launches."
+        "$launchctl_program" bootout "$launch_domain/$service_label" >/dev/null 2>&1 \
+          || echo "Could not unload the previous Spotifyd launch agent."
       fi
+      "$launchctl_program" bootstrap "$launch_domain" "$service_path" >/dev/null 2>&1 \
+        || echo "Could not start the Spotifyd launch agent; Spotify TUI will retry automatically when it launches."
     else
       echo "launchctl was not found; Spotify TUI will start Spotifyd automatically when it launches."
     fi

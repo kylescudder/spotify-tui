@@ -1,25 +1,23 @@
 # Spotify TUI
 
 A local-first terminal Spotify interface powered by `spotifyd`. Playback,
-controls, now-playing metadata, and artwork use the local session MPRIS
-interface and work without Spotify Web API access. Optional catalogue access
+controls, now-playing metadata, and artwork use a local player interface and
+work without Spotify Web API access. Optional catalogue access
 adds search, artist releases, album tracks, and play-from-search through the
 Spotify Web API. Version 1 targets a Nix flake on Linux and Homebrew on macOS,
-plus direct POSIX and Windows installers. The macOS and Windows playback
-adapters are still to be implemented.
+plus direct POSIX and Windows installers.
 
 The project is under active development. Linux playback uses Spotifyd's MPRIS
-interface. macOS and Windows builds compile and have release packaging, but
-their native playback adapters are not implemented yet; those packages must not
-be described as functionally complete until the platform acceptance tests pass.
+interface. macOS and Windows use the authenticated, loopback-only local-control
+adapter included in Spotify TUI's pinned Spotifyd build. Those packages must
+not be described as functionally complete until their live platform acceptance
+tests pass.
 
 ## Installation
 
-The intended canonical repository is `kylescudder/spotify-tui`, matching the
-owner used by the existing dotfiles repositories. It has not been created or
-released yet, so these commands become live after the external repository setup
-and first release. The release workflow stamps the actual repository into both
-direct installers, which also keeps forks functional.
+The canonical repository is `kylescudder/spotify-tui`. Installation URLs become
+live after the first tagged release. The release workflow stamps the actual
+repository into both direct installers, which also keeps forks functional.
 
 ### Nix
 
@@ -74,8 +72,9 @@ Spotify TUI is published through the existing
 brew install kylescudder/tap/spotify-tui
 ```
 
-The formula depends on `spotifyd` and defines a Homebrew service for it. On its
-first launch, Spotify TUI registers and starts that service through
+The formula builds and installs the compatible pinned Spotifyd runtime and
+defines a Homebrew service for it. On its first launch, Spotify TUI registers
+and starts that service through
 `brew services`; subsequent launches reuse it. The release workflow styles,
 audits, builds, installs, and tests the formula on macOS before opening its tap
 update pull request.
@@ -89,8 +88,10 @@ curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
 
 The installer detects the platform, downloads the matching release archive,
 checks it against `SHA256SUMS`, and installs Spotify TUI, its diagnostic, and a
-pinned Spotifyd runtime to `$HOME/.local/bin` without `sudo`. An existing
-Spotifyd binary or configuration is preserved. A new Linux installation gets a
+pinned Spotifyd runtime to `$HOME/.local/bin` without `sudo`. Linux preserves a
+compatible existing Spotifyd binary, while macOS installs the bundled runtime
+required by its local-control adapter. Existing configuration is preserved. A
+new Linux installation gets a
 session-MPRIS configuration and a systemd user service that is enabled and
 started immediately; macOS gets a LaunchAgent that is bootstrapped immediately.
 
@@ -115,7 +116,7 @@ Useful installer controls are:
 | --- | --- |
 | `--config-dir DIRECTORY` | Override the directory for a newly created `spotifyd.conf`. |
 | `--no-dependencies` | Install only Spotify TUI and its diagnostic. |
-| `--force-dependencies` | Replace an existing local Spotifyd with the bundled pinned build. |
+| `--force-dependencies` | Replace an existing Linux Spotifyd with the bundled pinned build. |
 | `--no-service` | Do not create or enable the systemd user unit or LaunchAgent. |
 
 The direct installer does not invoke or modify Homebrew, Nix, Apt, or another
@@ -132,9 +133,9 @@ irm https://github.com/kylescudder/spotify-tui/releases/latest/download/install.
 The default destination is
 `%LOCALAPPDATA%\Programs\spotify-tui\bin`, which is added to the user PATH. The
 release archive contains Spotifyd built from the pinned upstream source with
-the portable Rodio backend. The installer preserves an existing Spotifyd,
-creates a minimal config when needed, adds a user Startup entry, and starts the
-daemon in the current session.
+the portable Rodio backend and Spotify TUI local control. The installer keeps
+that compatible runtime upgraded, preserves existing configuration, adds a user
+Startup entry, and starts the daemon in the current session.
 The inspect-first, version-pinned form is:
 
 ```powershell
@@ -151,8 +152,8 @@ PowerShell accepts `-ConfigDir`, `-NoDependencies`, `-ForceDependencies`,
 ### Release verification
 
 Every release includes `SHA256SUMS`, GitHub build-provenance attestations, the
-Spotifyd GPLv3 licence, and the complete source corresponding to the bundled
-Spotifyd binary.
+Spotifyd GPLv3 licence, and the complete upstream source plus Spotify TUI patch
+corresponding to the bundled Spotifyd binary.
 After downloading an artifact, verify its checksum and provenance with:
 
 ```bash
@@ -292,6 +293,9 @@ the normal path or its generated configuration lives elsewhere:
 | `SPOTIFY_TUI_SYSTEMD_RUN` | `systemd-run` | Linux transient-user-service executable or absolute path. |
 | `SPOTIFY_TUI_LAUNCHCTL` | `launchctl` | macOS launchd controller executable or absolute path. |
 | `SPOTIFY_TUI_BREW` | `brew` | Homebrew executable used for formula service lifecycle. |
+| `SPOTIFY_TUI_CONTROL_ADDRESS` | Auto-discovered | Fixed loopback address for the macOS/Windows local-control adapter. |
+| `SPOTIFY_TUI_CONTROL_ADDRESS_FILE` | Platform local-data directory | Override the daemon endpoint discovery file. |
+| `SPOTIFY_TUI_CONTROL_TOKEN_FILE` | Platform local-data directory | Override the owner-local authentication token shared with Spotifyd. |
 
 Spotifyd also supports Spotify Connect discovery as an alternative: select its
 device from an official Spotify client on the same local network. This is
@@ -301,11 +305,11 @@ If Spotify has a resumable context, press `Space` to continue it. To guarantee a
 specific context on a fresh session, configure `playback.startup_uri` as
 described below.
 
-Spotifyd requires a Spotify Premium account. The current MPRIS and systemd
-integration is Linux-only. Homebrew on macOS and a PowerShell installer on
-Windows are version-1 distribution targets, but their playback and service
-adapters must be completed before those packages are called functionally
-complete.
+Spotifyd requires a Spotify Premium account. MPRIS and systemd integration are
+Linux-only; macOS and Windows use a per-user discovery file, an ephemeral
+loopback port, and an owner-local random token. Their adapters and packaging are
+implemented, but both still require live acceptance before those packages are
+called functionally complete.
 
 ## Catalogue search
 
@@ -324,9 +328,11 @@ An artist page shows the artist's album and single releases. Its artwork preview
 follows the selected release, falling back to the artist image when a release
 has no cover. Opening a release shows its tracks. Selecting a track asks Spotify
 to start that exact URI on the active Spotifyd device, retaining its album as
-the playback context. This avoids an off-by-one bug in Spotifyd 0.4.2's MPRIS
-`OpenUri` implementation; play/pause, previous/next, seeking, volume, and all
-now-playing state remain on the local MPRIS connection.
+the playback context. This avoids an off-by-one bug in stock Spotifyd 0.4.2's
+MPRIS `OpenUri` implementation; the bundled macOS/Windows runtime selects the
+exact URI within that context instead of calculating a track-number offset.
+Play/pause, previous/next, seeking, volume, and now-playing state remain on the
+platform's local playback connection.
 
 Spotify does not provide a distributable, zero-configuration Web API client for
 this use case. Each installation therefore needs a Spotify developer app client

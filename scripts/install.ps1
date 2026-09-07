@@ -150,20 +150,13 @@ try {
     $installBundledSpotifyd = $false
     if (-not $NoDependencies) {
         $installedSpotifyd = Join-Path $InstallDir "spotifyd.exe"
-        $spotifydCommand = Get-Command "spotifyd.exe" -ErrorAction SilentlyContinue
-        if (-not $ForceDependencies -and (Test-Path -LiteralPath $installedSpotifyd -PathType Leaf)) {
-            $spotifydPath = $installedSpotifyd
-        } elseif (-not $ForceDependencies -and $null -ne $spotifydCommand) {
-            $spotifydPath = $spotifydCommand.Source
-        } else {
-            foreach ($dependencyFile in @("spotifyd.exe", "SPOTIFYD-LICENSE")) {
-                if (-not (Test-Path -LiteralPath (Join-Path $unpackedDir $dependencyFile) -PathType Leaf)) {
-                    throw "Release archive is missing bundled $dependencyFile."
-                }
+        foreach ($dependencyFile in @("spotifyd.exe", "SPOTIFYD-LICENSE")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $unpackedDir $dependencyFile) -PathType Leaf)) {
+                throw "Release archive is missing bundled $dependencyFile."
             }
-            $spotifydPath = $installedSpotifyd
-            $installBundledSpotifyd = $true
         }
+        $spotifydPath = $installedSpotifyd
+        $installBundledSpotifyd = $true
     }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -171,6 +164,8 @@ try {
     Copy-Item -Force -LiteralPath (Join-Path $unpackedDir "spotify-tui-diagnose.exe") -Destination $InstallDir
 
     if ($installBundledSpotifyd) {
+        Get-Process -Name "spotifyd" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
         Copy-Item -Force -LiteralPath (Join-Path $unpackedDir "spotifyd.exe") -Destination $spotifydPath
         $shareDir = Join-Path (Split-Path -Parent $InstallDir) "share\spotify-tui"
         New-Item -ItemType Directory -Force -Path $shareDir | Out-Null
@@ -211,18 +206,14 @@ initial_volume = 90
         } else {
             New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
             $startupPath = Join-Path $startupDir "spotifyd.cmd"
-            if (-not (Test-Path -LiteralPath $startupPath)) {
-                $escapedSpotifydPath = $spotifydPath.Replace("%", "%%")
-                $escapedConfigPath = $configPath.Replace("%", "%%")
-                [System.IO.File]::WriteAllText(
-                    $startupPath,
-                    "@start `"`" `"$escapedSpotifydPath`" --config-path `"$escapedConfigPath`" --no-daemon" + [Environment]::NewLine,
-                    [System.Text.UTF8Encoding]::new($false)
-                )
-                Write-Host "Created Spotifyd user startup entry at $startupPath"
-            } else {
-                Write-Host "Preserved existing Spotifyd user startup entry at $startupPath"
-            }
+            $escapedSpotifydPath = $spotifydPath.Replace("%", "%%")
+            $escapedConfigPath = $configPath.Replace("%", "%%")
+            [System.IO.File]::WriteAllText(
+                $startupPath,
+                "@start `"`" `"$escapedSpotifydPath`" --config-path `"$escapedConfigPath`" --no-daemon" + [Environment]::NewLine,
+                [System.Text.UTF8Encoding]::new($false)
+            )
+            Write-Host "Installed Spotifyd user startup entry at $startupPath"
         }
         Start-SpotifydForCurrentSession -Program $spotifydPath -Configuration $configPath
     }

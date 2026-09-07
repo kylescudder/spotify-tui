@@ -17,6 +17,10 @@ uses semantic versioning once public releases begin.
   the legacy fixed name.
 - Live Linux MPRIS property and seek subscriptions, bounded automatic
   reconnection, and play/pause, track, seek, and volume controls in the TUI.
+- Added an authenticated loopback playback adapter for macOS and Windows,
+  backed by the pinned bundled Spotifyd runtime, with per-user endpoint
+  discovery, phone-free activation, metadata, artwork, progress, every playback
+  command, and automatic recovery after daemon restarts.
 - Fixed a restart race that could miss Spotifyd's MPRIS name disappearing and
   leave the playback supervisor waiting on the terminated player indefinitely.
 - Treat Spotifyd's transient "no position available currently" MPRIS response
@@ -53,6 +57,8 @@ uses semantic versioning once public releases begin.
 - Fall back to the same selected track through local Spotifyd control when the
   Web API temporarily returns `404` because it cannot see an active device,
   instead of replacing the player with a fatal catalogue error.
+- Added deterministic catalogue failure coverage for actionable Spotify Web API
+  `403` permission and `429` quota responses.
 - Removed the planned audio spectrum from the product scope and dropped the
   unused `cava` dependency from Nix and Homebrew packaging.
 - Locked Nix flake, Homebrew formula automation, cross-platform release assets,

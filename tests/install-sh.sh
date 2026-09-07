@@ -78,7 +78,11 @@ SPOTIFY_TUI_ALLOW_INSECURE_FOR_TESTS=1 \
     --config-dir "$test_root/config" \
     --no-service >/dev/null
 test "$("$test_root/bin/spotify-tui")" = "upgraded spotify-tui"
-test "$("$test_root/bin/spotifyd")" = "fixture spotifyd"
+if [ "$os" = apple-darwin ]; then
+  test "$("$test_root/bin/spotifyd")" = "upgraded spotifyd"
+else
+  test "$("$test_root/bin/spotifyd")" = "fixture spotifyd"
+fi
 
 SPOTIFY_TUI_RELEASE_BASE_URL="$test_root/release" \
 SPOTIFY_TUI_ALLOW_INSECURE_FOR_TESTS=1 \

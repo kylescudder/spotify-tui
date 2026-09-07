@@ -1,7 +1,7 @@
 use std::{future::Future, io, sync::mpsc, thread, thread::JoinHandle, time::Duration};
 
 use crate::playback::{
-    MprisPlaybackSource, PlaybackCommand, PlaybackError, PlaybackSnapshot, PlaybackSource,
+    PlatformPlaybackSource, PlaybackCommand, PlaybackError, PlaybackSnapshot, PlaybackSource,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,7 +29,7 @@ enum WorkerCommand {
 
 impl PlaybackRuntime {
     pub fn start(startup_uri: Option<String>) -> io::Result<Self> {
-        Self::start_with_factory(MprisPlaybackSource::connect, startup_uri)
+        Self::start_with_factory(PlatformPlaybackSource::connect, startup_uri)
     }
 
     pub fn start_with_source<S>(source: S) -> io::Result<Self>
@@ -279,7 +279,8 @@ mod tests {
 
     use super::*;
     use crate::playback::{
-        PlaybackCommand, PlaybackError, PlaybackSnapshot, PlaybackStatus, TrackMetadata,
+        MprisPlaybackSource, PlaybackCommand, PlaybackError, PlaybackSnapshot, PlaybackStatus,
+        TrackMetadata,
     };
 
     struct FakePlaybackSource {

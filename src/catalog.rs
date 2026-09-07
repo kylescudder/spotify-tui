@@ -1093,6 +1093,26 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_permission_and_quota_failures_remain_actionable() {
+        assert!(matches!(
+            CatalogError::from_http(ureq::Error::StatusCode(403)),
+            CatalogError::Forbidden
+        ));
+        assert!(matches!(
+            CatalogError::from_http(ureq::Error::StatusCode(429)),
+            CatalogError::QuotaExceeded
+        ));
+        assert_eq!(
+            CatalogError::Forbidden.to_string(),
+            "Spotify catalogue access was denied; check the app allowlist and authenticate again"
+        );
+        assert_eq!(
+            CatalogError::QuotaExceeded.to_string(),
+            "Spotify catalogue quota was exceeded; retry later"
+        );
+    }
+
+    #[test]
     fn runtime_lazily_retries_source_setup_without_restarting_the_tui() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let observed_attempts = Arc::clone(&attempts);

@@ -66,8 +66,8 @@ try {
     if ((Get-Content -Raw -LiteralPath (Join-Path $installDir "spotify-tui.exe")) -ne "upgraded spotify-tui") {
         throw "Installer did not upgrade the existing binary."
     }
-    if ((Get-Content -Raw -LiteralPath (Join-Path $installDir "spotifyd.exe")) -ne "fixture spotifyd") {
-        throw "Installer overwrote an existing Spotifyd binary."
+    if ((Get-Content -Raw -LiteralPath (Join-Path $installDir "spotifyd.exe")) -ne "upgraded spotifyd") {
+        throw "Installer did not upgrade its compatible Spotifyd runtime."
     }
 
     & (Join-Path $repositoryRoot "scripts/install.ps1") `

@@ -2,6 +2,6 @@ version = 1
 public_release = false
 
 [platforms]
-linux = false
+linux = true
 macos = false
 windows = false

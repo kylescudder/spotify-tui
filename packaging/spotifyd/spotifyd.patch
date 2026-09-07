@@ -1,0 +1,186 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 1a64b07..02379ba 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -19,6 +19,7 @@ dbus-crossroads = { version = "0.5.0", optional = true }
+ fern = { version = "0.7.0", features = ["syslog-7", "colored"] }
+ futures = "0.3.15"
++getrandom = "0.3"
+ gethostname = "1.0.0"
+ hex = "0.4"
+ libc = "0.2.82"
+@@ -26,8 +27,9 @@ log = "0.4.6"
+ serde = { version = "1.0.115", features = ["derive"] }
++serde_json = "1.0"
+ sha-1 = "0.10"
+-tokio = {version = "1.44.2", features = ["signal", "rt-multi-thread", "process", "io-std"] }
++tokio = {version = "1.44.2", features = ["signal", "rt-multi-thread", "process", "io-std", "io-util", "net", "sync", "time"] }
+ tokio-stream = "0.1.7"
+ url = "2.2.2"
+ librespot-audio = { version = "0.8.0", default-features = false }
+@@ -73,6 +75,7 @@ alsa_backend = ["librespot-playback/alsa-backend", "dep:alsa"]
+ dbus_mpris = ["dep:dbus", "dep:dbus-tokio", "dep:dbus-crossroads"]
+ default = ["alsa_backend", "pulseaudio_backend", "dbus_mpris"]
++local_control = []
+ portaudio_backend = ["librespot-playback/portaudio-backend"]
+ pulseaudio_backend = ["librespot-playback/pulseaudio-backend"]
+ rodio_backend = ["librespot-playback/rodio-backend"]
+diff --git a/Cargo.lock b/Cargo.lock
+index 0d6bf7f..5589037 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3236,6 +3236,7 @@ dependencies = [
+  "fern",
+  "futures",
+  "gethostname",
++ "getrandom 0.3.4",
+  "hex",
+  "libc",
+  "librespot-audio",
+@@ -3250,6 +3251,7 @@ dependencies = [
+  "serde",
+  "serde_ignored",
++ "serde_json",
+  "sha-1",
+  "syslog",
+  "thiserror 2.0.17",
+diff --git a/src/main.rs b/src/main.rs
+index 67a2214..4fab00c 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -27,6 +27,8 @@ mod dbus_mpris;
+ mod error;
++#[cfg(feature = "local_control")]
++mod local_control;
+ mod main_loop;
+ mod no_mixer;
+ mod oauth;
+diff --git a/src/main_loop.rs b/src/main_loop.rs
+index 8fdb2a8..7f21ae8 100644
+--- a/src/main_loop.rs
++++ b/src/main_loop.rs
+@@ -2,6 +2,8 @@
+ use crate::config::{DBusType, MprisConfig};
+ #[cfg(feature = "dbus_mpris")]
+ use crate::dbus_mpris::DbusServer;
++#[cfg(feature = "local_control")]
++use crate::local_control::LocalControlServer;
+ use crate::process::spawn_program_on_event;
+ use crate::utils::Backoff;
+ use color_eyre::eyre::{self, Context};
+@@ -9,7 +11,10 @@ use futures::future::Either;
+-#[cfg(not(feature = "dbus_mpris"))]
++#[cfg(any(not(feature = "dbus_mpris"), not(feature = "local_control")))]
+ use futures::future::Pending;
+ use futures::{
+@@ -27,6 +29,9 @@ use std::sync::Arc;
+ #[cfg(not(feature = "dbus_mpris"))]
+ type DbusServer = Pending<()>;
+
++#[cfg(not(feature = "local_control"))]
++type LocalControlServer = Pending<()>;
++
+ pub(crate) enum CredentialsProvider {
+@@ -92,7 +97,10 @@ pub(crate) struct MainLoop {
+ 
+ struct ConnectionInfo<SpircTask: Future<Output = ()>> {
+     spirc: Spirc,
+-    #[cfg_attr(not(feature = "dbus_mpris"), expect(unused))]
++    #[cfg_attr(
++        not(any(feature = "dbus_mpris", feature = "local_control")),
++        expect(unused)
++    )]
+     session: Session,
+     player: Arc<Player>,
+     spirc_task: SpircTask,
+@@ -152,6 +160,7 @@ impl MainLoop {
+             let ctrl_c = tokio::signal::ctrl_c();
+             // we don't necessarily have a dbus server
+             let dbus_server = Either::<DbusServer, _>::Right(future::pending());
++            let local_control_server = Either::<LocalControlServer, _>::Right(future::pending());
+         }
+ 
+         #[cfg(feature = "dbus_mpris")]
+@@ -168,6 +177,14 @@ impl MainLoop {
+             None
+         };
+ 
++        #[cfg(feature = "local_control")]
++        let local_control_event_tx = {
++            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
++            *local_control_server.as_mut() = Either::Left(LocalControlServer::new(rx));
++            tx
++        };
++
+         let mainloop_result: eyre::Result<()> = 'mainloop: loop {
+@@ -192,6 +209,18 @@ impl MainLoop {
+ 
+             let shared_spirc = Arc::new(connection.spirc);
+ 
++            #[cfg(feature = "local_control")]
++            if let Either::Left(mut local_control_server) =
++                Either::as_pin_mut(local_control_server.as_mut())
++                && let Err(err) = local_control_server
++                    .as_mut()
++                    .set_session(shared_spirc.clone(), connection.session.clone())
++            {
++                let _ = shared_spirc.shutdown();
++                let _ = (&mut spirc_task).await;
++                break 'mainloop Err(err).wrap_err("failed to configure local control server");
++            }
++
+             #[cfg(feature = "dbus_mpris")]
+@@ -230,6 +259,17 @@ impl MainLoop {
+                         #[cfg(not(feature = "dbus_mpris"))]
+                         result // unused variable
+                     }
++                    // local control stopped unexpectedly
++                    result = &mut local_control_server => {
++                        #[cfg(feature = "local_control")]
++                        {
++                            let _ = shared_spirc.shutdown();
++                            let _ = (&mut spirc_task).await;
++                            *local_control_server.as_mut() = Either::Right(future::pending());
++                            break 'mainloop result.wrap_err("local control terminated unexpectedly");
++                        }
++                        #[cfg(not(feature = "local_control"))]
++                        result // unused variable
++                    }
+                     // a new player event is available and no program is running
+                     event = event_channel.recv(), if running_event_program.is_terminated() => {
+@@ -240,6 +280,10 @@ impl MainLoop {
+                             tx.send(event.clone()).unwrap();
+                         }
++                        #[cfg(feature = "local_control")]
++                        local_control_event_tx
++                            .send(event.clone())
++                            .expect("local control event channel closed unexpectedly");
+                         if let Some(ref cmd) = self.player_event_program {
+@@ -263,6 +307,12 @@ impl MainLoop {
+                 break 'mainloop Err(err).wrap_err("failed to reconfigure DBus server");
+             }
++            #[cfg(feature = "local_control")]
++            if let Either::Left(local_control_server) =
++                Either::as_pin_mut(local_control_server.as_mut())
++                && let Err(err) = local_control_server.drop_session()
++            {
++                break 'mainloop Err(err).wrap_err("failed to reconfigure local control server");
++            }
+         };
+@@ -270,6 +320,19 @@ impl MainLoop {
+             let _ = stream.into_inner().shutdown().await;
+         }
++        #[cfg(feature = "local_control")]
++        if let Either::Left(local_control_server) =
++            Either::as_pin_mut(local_control_server.as_mut())
++            && local_control_server.shutdown()
++            && let Err(err) = local_control_server.await
++        {
++            let err = Err(err).wrap_err("failed to shutdown local control server");
++            if mainloop_result.is_ok() {
++                return err;
++            } else {
++                error!("additional error while shutting down: {err:?}");
++            }
++        }
+         #[cfg(feature = "dbus_mpris")]
