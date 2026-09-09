@@ -252,10 +252,10 @@ publish formula updates through the existing `kylescudder/homebrew-tap`
 repository (the `kylescudder/tap` Homebrew tap). The remaining infrastructure
 activation is to enable the required repository protections and attestations
 and run the release workflow on GitHub. The scoped cross-repository deploy key
-and `HOMEBREW_TAP_SSH_KEY` secret are configured; their production-branch write
-still needs the explicit rehearsal described below. The workflow stamps the
-actual product repository into release installers at build time, so forks also
-remain functional.
+and `HOMEBREW_TAP_SSH_KEY` secret are configured, and their production-branch
+write was validated successfully by the manual rehearsal. The workflow stamps
+the actual product repository into release installers at build time, so forks
+also remain functional.
 
 The infrastructure can build macOS and Windows packages, but those packages must
 not be advertised as functionally complete until the platform runtime adapters
@@ -318,11 +318,11 @@ they are no longer open implementation tasks.
      omitted explicitly without affecting the Spotify TUI installation.
 
 3. Activate and prove the release infrastructure.
-   - Run the non-publishing GitHub Actions rehearsal and require every Linux,
-     macOS, Windows, Nix, installer, and Homebrew job to pass.
-   - Explicitly enable `verify_tap_write` during one manual rehearsal to validate
-     `HOMEBREW_TAP_SSH_KEY` against the tap's production `main` branch. This adds
-     an empty commit but does not change tap files.
+   - Re-run the non-publishing GitHub Actions rehearsal after the Windows patch
+     line-ending fix and require every Linux, macOS, Windows, Nix, installer,
+     and Homebrew job to pass. The prior rehearsal already validated
+     `HOMEBREW_TAP_SSH_KEY` against the tap's production `main` branch with a
+     content-neutral empty commit.
    - Prove that a tagged release publishes and attests its archives before it
      updates `Formula/spotify-tui.rb` in `kylescudder/homebrew-tap`.
    - Do not create a public product tag until platform runtime acceptance passes.
