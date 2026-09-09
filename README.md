@@ -76,8 +76,7 @@ The formula builds and installs the compatible pinned Spotifyd runtime and
 defines a Homebrew service for it. On its first launch, Spotify TUI registers
 and starts that service through
 `brew services`; subsequent launches reuse it. The release workflow styles,
-audits, builds, installs, and tests the formula on macOS before opening its tap
-update pull request.
+audits, builds, installs, and tests the formula on macOS before updating the tap.
 
 ### Direct installer on Linux or macOS
 

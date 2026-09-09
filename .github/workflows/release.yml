@@ -9,12 +9,17 @@ on:
         description: Version to rehearse; it must match Cargo.toml
         required: false
         type: string
+      verify_tap_write:
+        description: Push one content-neutral deploy-key verification commit to the tap's main branch
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -90,6 +95,29 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked --all-targets --all-features
+
+  test-homebrew-tap-access:
+    name: Homebrew tap deploy-key write
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_tap_write
+    needs: preflight
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Homebrew tap with deploy key
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kylescudder/homebrew-tap
+          ref: main
+          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
+          path: tap
+
+      - name: Verify deploy-key write access to the tap main branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C tap config user.name github-actions[bot]
+          git -C tap config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C tap commit --allow-empty -m "verify spotify-tui deploy key (${GITHUB_RUN_ID})"
+          git -C tap push origin HEAD:main
 
   nix:
     name: Release Nix check (${{ matrix.os }})
@@ -401,7 +429,7 @@ jobs:
   publish:
     name: Publish GitHub release
     if: needs.preflight.outputs.publish == 'true'
-    needs: [preflight, assemble, update-homebrew-tap]
+    needs: [preflight, nix, assemble, test-posix-release, test-windows-release, test-homebrew-release]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -425,11 +453,14 @@ jobs:
         run: gh release create "$GITHUB_REF_NAME" bundle/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
 
   update-homebrew-tap:
-    name: Open Homebrew tap update
+    name: Update Homebrew tap
     if: needs.preflight.outputs.publish == 'true'
-    needs: [preflight, nix, assemble, test-posix-release, test-windows-release, test-homebrew-release]
+    needs: [preflight, publish]
     runs-on: ubuntu-24.04
     steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Download release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -440,32 +471,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kylescudder/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ref: main
+          ssh-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
           path: tap
 
-      - name: Commit formula update and open pull request
+      - name: Commit formula update
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          TAP_REPOSITORY: kylescudder/homebrew-tap
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          branch="spotify-tui-v${VERSION}"
+          sh scripts/validate-homebrew-formula-upgrade.sh "$VERSION" tap/Formula/spotify-tui.rb
           mkdir -p tap/Formula
           cp bundle/spotify-tui.rb tap/Formula/spotify-tui.rb
           git -C tap config user.name github-actions[bot]
           git -C tap config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git -C tap checkout -B "$branch"
           git -C tap add Formula/spotify-tui.rb
-          git -C tap commit -m "spotify-tui ${VERSION}"
-          git -C tap push --force origin "$branch"
-          if gh pr view "$branch" --repo "$TAP_REPOSITORY" >/dev/null 2>&1; then
-            echo "Homebrew pull request already exists for $branch"
+          if git -C tap diff --cached --quiet; then
+            echo "Homebrew formula already matches spotify-tui ${VERSION}"
           else
-            gh pr create \
-              --repo "$TAP_REPOSITORY" \
-              --head "$branch" \
-              --title "spotify-tui ${VERSION}" \
-              --body "Automated formula update for spotify-tui v${VERSION}."
+            git -C tap commit -m "spotify-tui ${VERSION}"
+            git -C tap push origin HEAD:main
           fi

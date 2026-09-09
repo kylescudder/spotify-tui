@@ -17,10 +17,11 @@ every release path before publishing anything.
 3. The release workflow targets the existing `kylescudder/homebrew-tap`
    repository. Its Homebrew name is `kylescudder/tap`, and release formulae are
    placed in its existing `Formula` directory.
-4. Create a fine-grained token with contents and pull-request write access only
-   to `kylescudder/homebrew-tap`, then store it in the Spotify TUI repository as
-   the Actions secret `HOMEBREW_TAP_TOKEN`. GitHub's built-in token cannot write
-   to a different repository.
+4. Create a dedicated Ed25519 SSH key without a passphrase. Add its public key
+   to `kylescudder/homebrew-tap` as a write-enabled deploy key, then store the
+   private key in the Spotify TUI repository as the Actions secret
+   `HOMEBREW_TAP_SSH_KEY`. Never commit or print the private key. GitHub's
+   built-in token cannot write to a different repository.
 5. Enable GitHub artifact attestations for the repository. The release job uses
    GitHub's OIDC token and needs no long-lived signing key.
 
@@ -32,8 +33,11 @@ a new SHA.
 
 Run the `Release` workflow manually. An optional version input must match the
 package version in `Cargo.toml`. Manual runs perform the complete build,
-installer, Nix, and Homebrew test sequence but never create a GitHub release or
-tap pull request.
+installer, Nix, and Homebrew test sequence, but never create a GitHub release.
+They do not change the tap unless `verify_tap_write` is explicitly enabled.
+That option proves the production deploy key and branch rules with one
+content-neutral empty commit pushed to the tap's `main` branch; it changes tap
+history but not any files.
 
 The matrix produces:
 
@@ -92,16 +96,19 @@ The tag workflow re-runs quality checks, performs native builds on all five
 targets, runs clean installer smoke tests on Linux, macOS, and Windows, builds
 and tests the Homebrew formula, validates Nix, and then:
 
-- opens a formula-update pull request against `kylescudder/homebrew-tap`;
 - creates GitHub provenance attestations for every release asset;
-- creates the GitHub release with generated notes.
+- creates the GitHub release with generated notes;
+- updates `Formula/spotify-tui.rb` in `kylescudder/homebrew-tap` after the
+  release assets are publicly available.
 
 Any architecture, installer, formula, or Nix failure blocks publication. The
-tap branch and pull request must also be created successfully before the GitHub
-release becomes public, so a missing or expired tap token cannot leave a public
-release only partially distributed. A tag also fails before building unless
-every approval in `release-readiness.toml` matches the exact Cargo package
-version.
+tap update is deliberately last so the formula can never advertise an archive
+that does not exist. Release runs are serialized, and the update refuses to
+downgrade an existing formula if an older tag is re-run. If the deploy-key push
+fails, the GitHub release remains usable through its direct installers while
+the previous Homebrew formula remains valid; fix the key or branch rule and
+retry the release workflow. A tag also fails before building unless every
+approval in `release-readiness.toml` matches the exact Cargo package version.
 
 ## Checksums and trust
 
@@ -121,9 +128,10 @@ without trusting a network service.
 
 The checked-in Ruby file is deliberately a template because its repository URL,
 version, and source checksum do not exist until release assembly. The generated
-formula is tested from the exact staged source archive, uploaded with the GitHub
-release, and copied into the tap on a review branch. No workflow pushes an
-unreviewed checksum directly to the tap's default branch.
+formula is tested from the exact staged source archive and pushed to the tap
+only after every build, installer, Nix, and Homebrew check passes and the GitHub
+release assets are public. The tap push is version-guarded so re-running an old
+tag cannot replace a newer formula.
 
 Do not merge or advertise the macOS formula as functionally complete until its
 local-control playback, service, and audio paths pass the product acceptance

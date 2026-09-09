@@ -215,8 +215,11 @@ The release infrastructure is implemented in this repository:
 - `.github/workflows/release.yml` accepts manual non-publishing rehearsals and
   semantic tags. It natively builds Linux x86_64/aarch64, macOS Intel/Apple
   Silicon, and Windows x86_64 artifacts, generates checksums, creates GitHub
-  provenance attestations, and publishes only after every packaging job and the
-  Homebrew tap pull-request update pass. `release-readiness.toml` additionally
+  provenance attestations, publishes only after every packaging job passes,
+  then updates the Homebrew tap after the assets are public. Manual rehearsals
+  can explicitly validate deploy-key and branch-policy write access with one
+  content-neutral empty commit to the tap's `main` branch.
+  `release-readiness.toml` additionally
   blocks public tags until the exact Cargo package version is explicitly
   approved for public release and live runtime acceptance on all three
   platforms; an old version's approvals cannot carry across a version bump.
@@ -236,19 +239,23 @@ The release infrastructure is implemented in this repository:
   `c5b94367014856a8c541dea565cbd332e034fb9e`.
 - `packaging/homebrew/spotify-tui.rb.template` is rendered with the tagged source
   checksum and defines the Spotifyd service used by the lifecycle adapter. It is
-  styled, audited, installed, and tested on macOS. A successful tag opens a
-  reviewable formula pull request in `kylescudder/homebrew-tap`; it never pushes
-  an unreviewed checksum to the tap's default branch.
+  styled, audited, installed, and tested on macOS. A successful tag pushes the
+  tested formula to `kylescudder/homebrew-tap` using its scoped SSH deploy key
+  after the GitHub release assets become public. Release runs are serialized,
+  and a formula version guard prevents an older tag rerun from downgrading the
+  tap.
 - `LICENSE`, `CHANGELOG.md`, the README installation/verification instructions,
   and `docs/releasing.md` complete the operator-facing release surface.
 
 The canonical product repository is `kylescudder/spotify-tui`, and releases
 publish formula updates through the existing `kylescudder/homebrew-tap`
 repository (the `kylescudder/tap` Homebrew tap). The remaining infrastructure
-activation is to enable the required repository protections and attestations,
-configure the cross-repository tap token described in `docs/releasing.md`, and
-run the workflows on GitHub. The workflow stamps the actual product repository
-into release installers at build time, so forks also remain functional.
+activation is to enable the required repository protections and attestations
+and run the release workflow on GitHub. The scoped cross-repository deploy key
+and `HOMEBREW_TAP_SSH_KEY` secret are configured; their production-branch write
+still needs the explicit rehearsal described below. The workflow stamps the
+actual product repository into release installers at build time, so forks also
+remain functional.
 
 The infrastructure can build macOS and Windows packages, but those packages must
 not be advertised as functionally complete until the platform runtime adapters
@@ -313,9 +320,11 @@ they are no longer open implementation tasks.
 3. Activate and prove the release infrastructure.
    - Run the non-publishing GitHub Actions rehearsal and require every Linux,
      macOS, Windows, Nix, installer, and Homebrew job to pass.
-   - Configure the `HOMEBREW_TAP_TOKEN` integration and prove that a tagged
-     release opens a reviewable formula pull request in
-     `kylescudder/homebrew-tap` without direct writes to its default branch.
+   - Explicitly enable `verify_tap_write` during one manual rehearsal to validate
+     `HOMEBREW_TAP_SSH_KEY` against the tap's production `main` branch. This adds
+     an empty commit but does not change tap files.
+   - Prove that a tagged release publishes and attests its archives before it
+     updates `Formula/spotify-tui.rb` in `kylescudder/homebrew-tap`.
    - Do not create a public product tag until platform runtime acceptance passes.
 
 4. Cut over the workstation only after acceptance.

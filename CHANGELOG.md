@@ -65,9 +65,10 @@ uses semantic versioning once public releases begin.
   direct POSIX and PowerShell installers, checksums, and build provenance.
 - Bound public and per-platform release approvals to the exact Cargo package
   version so a version bump automatically invalidates stale readiness state.
-- Made creation of the Homebrew tap update pull request a prerequisite for
-  publishing the GitHub release, preventing tap failures from leaving a
-  partially distributed public release.
+- Added a Balm-style, write-scoped Homebrew tap deploy key, an explicit
+  content-neutral production-branch write check, release serialization, and a
+  downgrade guard. Tested assets are now published before the formula is
+  exposed, so Homebrew never points at a missing archive.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified
   corresponding source and licence, safe config defaults, and user-level
   startup integration that starts the daemon during installation.
