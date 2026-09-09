@@ -69,6 +69,8 @@ uses semantic versioning once public releases begin.
   content-neutral production-branch write check, release serialization, and a
   downgrade guard. Tested assets are now published before the formula is
   exposed, so Homebrew never points at a missing archive.
+- Preserve LF endings for shell scripts and patches during Windows checkouts so
+  the patched Spotifyd release build applies cleanly.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified
   corresponding source and licence, safe config defaults, and user-level
   startup integration that starts the daemon during installation.

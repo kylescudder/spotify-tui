@@ -147,6 +147,9 @@ jobs:
       - name: Test release safety gates
         run: sh tests/release-safety.sh
 
+      - name: Test Windows checkout line endings
+        run: sh tests/windows-checkout-line-endings.sh
+
       - name: Lint shell scripts
         if: runner.os == 'Linux'
         run: shellcheck scripts/*.sh tests/*.sh
