@@ -57,9 +57,23 @@ job_block() {
   ' "$workflow"
 }
 
+step_block() {
+  awk -v step="$1" '
+    $0 == "      - name: " step { inside = 1 }
+    inside && $0 == "      - name: " step { print; next }
+    inside && /^      - name:/ { exit }
+    inside { print }
+  ' "$workflow"
+}
+
 publish_job=$(job_block publish)
 tap_job=$(job_block update-homebrew-tap)
 tap_access_job=$(job_block test-homebrew-tap-access)
+spotifyd_build_step=$(step_block "Build pinned Spotifyd runtime")
+
+printf '%s\n' "$spotifyd_build_step" |
+  grep -Eq '^[[:space:]]+shell:[[:space:]]+bash$' ||
+  fail "the cross-platform Spotifyd build must run its Bash continuations under Bash"
 
 printf '%s\n' "$publish_job" |
   grep -Eq '^[[:space:]]+needs:.*update-homebrew-tap' &&
