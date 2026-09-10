@@ -71,6 +71,8 @@ uses semantic versioning once public releases begin.
   exposed, so Homebrew never points at a missing archive.
 - Preserve LF endings for shell scripts and patches during Windows checkouts so
   the patched Spotifyd release build applies cleanly.
+- Run the cross-platform Spotifyd release commands explicitly under Bash so
+  their multiline continuations are not parsed as PowerShell on Windows.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified
   corresponding source and licence, safe config defaults, and user-level
   startup integration that starts the daemon during installation.

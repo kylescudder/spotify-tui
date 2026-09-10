@@ -232,6 +232,7 @@ jobs:
 
       - name: Build pinned Spotifyd runtime
         if: matrix.spotifyd_mode == 'build'
+        shell: bash
         run: |
           cargo test --locked \
             --manifest-path spotifyd-upstream/Cargo.toml \
