@@ -35,6 +35,16 @@ else
 fi
 printf '%s  %s\n' "$checksum" "$artifact" > "$test_root/release/SHA256SUMS"
 
+sed 's|@REPOSITORY@|example/spotify-tui|g' \
+  "$repository_root/scripts/install.sh" > "$test_root/stamped-install.sh"
+SPOTIFY_TUI_RELEASE_BASE_URL="$test_root/release" \
+SPOTIFY_TUI_ALLOW_INSECURE_FOR_TESTS=1 \
+  sh "$test_root/stamped-install.sh" \
+    --install-dir "$test_root/stamped/bin" \
+    --no-dependencies \
+    --no-service >/dev/null
+test -x "$test_root/stamped/bin/spotify-tui"
+
 SPOTIFY_TUI_RELEASE_BASE_URL="$test_root/release" \
 SPOTIFY_TUI_ALLOW_INSECURE_FOR_TESTS=1 \
   sh "$repository_root/scripts/install.sh" \

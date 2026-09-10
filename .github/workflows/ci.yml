@@ -144,6 +144,18 @@ jobs:
       - name: Test Homebrew formula renderer
         run: sh tests/render-homebrew-formula.sh
 
+      - name: Validate staged Homebrew formula
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          formula="$RUNNER_TEMP/spotify-tui.rb"
+          sh scripts/render-homebrew-formula.sh \
+            "$GITHUB_REPOSITORY" 0.1.0 \
+            0000000000000000000000000000000000000000000000000000000000000000 \
+            "$formula"
+          sh scripts/validate-homebrew-formula.sh "$formula"
+
       - name: Test release safety gates
         run: sh tests/release-safety.sh
 

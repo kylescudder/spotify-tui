@@ -5,6 +5,7 @@ set -eu
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 validator="$repo_root/scripts/validate-release-readiness.sh"
 formula_version_guard="$repo_root/scripts/validate-homebrew-formula-upgrade.sh"
+formula_validator="$repo_root/scripts/validate-homebrew-formula.sh"
 workflow="$repo_root/.github/workflows/release.yml"
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
@@ -16,6 +17,7 @@ fail() {
 
 [ -f "$validator" ] || fail "missing release-readiness validator"
 [ -f "$formula_version_guard" ] || fail "missing Homebrew formula version guard"
+[ -f "$formula_validator" ] || fail "missing staged Homebrew formula validator"
 
 cat >"$fixture_dir/approved.toml" <<'EOF'
 version = 1
@@ -70,10 +72,24 @@ publish_job=$(job_block publish)
 tap_job=$(job_block update-homebrew-tap)
 tap_access_job=$(job_block test-homebrew-tap-access)
 spotifyd_build_step=$(step_block "Build pinned Spotifyd runtime")
+homebrew_style_step=$(step_block "Validate formula style")
 
 printf '%s\n' "$spotifyd_build_step" |
   grep -Eq '^[[:space:]]+shell:[[:space:]]+bash$' ||
   fail "the cross-platform Spotifyd build must run its Bash continuations under Bash"
+
+printf '%s\n' "$homebrew_style_step" |
+  grep -Fq 'sh scripts/validate-homebrew-formula.sh bundle/spotify-tui.rb' ||
+  fail "release rehearsal must validate the formula through the staged-tap helper"
+
+grep -Fq "brew tap-new --no-git \"\$tap_name\"" "$formula_validator" ||
+  fail "Homebrew validation must stage the formula in a disposable tap"
+
+grep -Fq "brew style --formula \"\$formula_name\"" "$formula_validator" ||
+  fail "Homebrew style must validate the staged tap formula"
+
+grep -Fq "brew audit --strict --formula \"\$formula_name\"" "$formula_validator" ||
+  fail "Homebrew audit must validate the staged tap formula"
 
 printf '%s\n' "$publish_job" |
   grep -Eq '^[[:space:]]+needs:.*update-homebrew-tap' &&
