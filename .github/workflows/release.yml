@@ -403,6 +403,9 @@ jobs:
         os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Download release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -410,9 +413,7 @@ jobs:
           path: bundle
 
       - name: Validate formula style
-        run: |
-          brew style bundle/spotify-tui.rb
-          brew audit --strict bundle/spotify-tui.rb
+        run: sh scripts/validate-homebrew-formula.sh bundle/spotify-tui.rb
 
       - name: Install and test formula from staged source
         shell: bash
@@ -423,9 +424,11 @@ jobs:
           local_source="$RUNNER_TEMP/spotify-tui-${VERSION}.tar.gz"
           cp bundle/spotify-tui-source.tar.gz "$local_source"
           source_url="file://${local_source}"
-          sed "s|^  url .*|  url \"${source_url}\"|" bundle/spotify-tui.rb > "$RUNNER_TEMP/spotify-tui.rb"
-          brew install --formula "$RUNNER_TEMP/spotify-tui.rb"
-          brew test spotify-tui
+          tap_formula="$(brew --repository spotify-tui/rehearsal)/Formula/spotify-tui.rb"
+          sed "s|^  url .*|  url \"${source_url}\"|" "$tap_formula" > "$RUNNER_TEMP/spotify-tui.rb"
+          cp "$RUNNER_TEMP/spotify-tui.rb" "$tap_formula"
+          brew install spotify-tui/rehearsal/spotify-tui
+          brew test spotify-tui/rehearsal/spotify-tui
 
   publish:
     name: Publish GitHub release

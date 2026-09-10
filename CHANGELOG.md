@@ -73,6 +73,10 @@ uses semantic versioning once public releases begin.
   the patched Spotifyd release build applies cleanly.
 - Run the cross-platform Spotifyd release commands explicitly under Bash so
   their multiline continuations are not parsed as PowerShell on Windows.
+- Keep the installers' unstamped-repository sentinel separate from their
+  release-stamped default, and validate staged Homebrew Ruby files in formula
+  mode from a disposable local tap during release rehearsals and normal macOS
+  CI.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified
   corresponding source and licence, safe config defaults, and user-level
   startup integration that starts the daemon during installation.

@@ -2,6 +2,7 @@
 set -eu
 
 repository=${SPOTIFY_TUI_REPOSITORY:-"@REPOSITORY@"}
+repository_placeholder='@''REPOSITORY@'
 version=${SPOTIFY_TUI_VERSION:-}
 install_dir=${SPOTIFY_TUI_INSTALL_DIR:-}
 config_dir=${SPOTIFY_TUI_SPOTIFYD_CONFIG_DIR:-}
@@ -84,8 +85,13 @@ if [ "$install_dependencies" -eq 0 ] && [ "$force_dependencies" -eq 1 ]; then
   exit 2
 fi
 
+if [ "$repository" = "$repository_placeholder" ]; then
+  echo "install.sh: repository must be OWNER/REPO; this source script is stamped during release" >&2
+  exit 2
+fi
+
 case "$repository" in
-  @REPOSITORY@|""|*/*/*|/*|*/|*[!A-Za-z0-9_.-]*/*|*/*[!A-Za-z0-9_.-]*)
+  ""|*/*/*|/*|*/|*[!A-Za-z0-9_.-]*/*|*/*[!A-Za-z0-9_.-]*)
     echo "install.sh: repository must be OWNER/REPO; this source script is stamped during release" >&2
     exit 2
     ;;

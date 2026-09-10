@@ -14,6 +14,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$repositoryPlaceholder = "@" + "REPOSITORY@"
 
 function Start-SpotifydForCurrentSession {
     param(
@@ -51,7 +52,7 @@ if ($NoDependencies -and $ForceDependencies) {
 if ([string]::IsNullOrWhiteSpace($Repository)) {
     $Repository = "@REPOSITORY@"
 }
-if ($Repository -eq "@REPOSITORY@") {
+if ($Repository -eq $repositoryPlaceholder) {
     throw "The source installer has no repository. Use -Repository OWNER/REPO or a release-stamped installer."
 }
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {

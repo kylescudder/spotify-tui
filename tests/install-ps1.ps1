@@ -20,6 +20,18 @@ try {
     $checksum = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $releaseDir $artifact)).Hash.ToLowerInvariant()
     Set-Content -LiteralPath (Join-Path $releaseDir "SHA256SUMS") -Value "$checksum  $artifact"
 
+    $stampedInstaller = Join-Path $testRoot "stamped-install.ps1"
+    $sourceInstaller = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot "scripts/install.ps1")
+    Set-Content -NoNewline -LiteralPath $stampedInstaller `
+        -Value $sourceInstaller.Replace("@REPOSITORY@", "example/spotify-tui")
+    & $stampedInstaller `
+        -ReleaseBaseUrl $releaseDir `
+        -AllowInsecureForTests `
+        -NoModifyPath `
+        -NoDependencies `
+        -NoService `
+        -InstallDir (Join-Path $testRoot "stamped-bin")
+
     & (Join-Path $repositoryRoot "scripts/install.ps1") `
         -Repository "example/spotify-tui" `
         -ReleaseBaseUrl $releaseDir `

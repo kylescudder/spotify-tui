@@ -318,8 +318,8 @@ they are no longer open implementation tasks.
      omitted explicitly without affecting the Spotify TUI installation.
 
 3. Activate and prove the release infrastructure.
-   - Re-run the non-publishing GitHub Actions rehearsal after the Windows release
-     shell fix and require every Linux, macOS, Windows, Nix, installer, and
+   - Re-run the non-publishing GitHub Actions rehearsal after the release
+     packaging fixes and require every Linux, macOS, Windows, Nix, installer, and
      Homebrew job to pass. The prior rehearsal already validated
      `HOMEBREW_TAP_SSH_KEY` against the tap's production `main` branch with a
      content-neutral empty commit.
