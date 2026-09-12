@@ -77,6 +77,10 @@ uses semantic versioning once public releases begin.
   release-stamped default, and validate staged Homebrew Ruby files in formula
   mode from a disposable local tap during release rehearsals and normal macOS
   CI.
+- Build the Linux ARM64 Spotifyd runtime natively in a pinned glibc 2.31
+  container with ALSA, PulseAudio, MPRIS, and Rustls because the upstream
+  archive requires obsolete OpenSSL 1.1 libraries; CI now rejects both obsolete
+  OpenSSL and newer-than-supported glibc dependencies before packaging Linux.
 - Self-contained direct archives with a pinned Spotifyd runtime, verified
   corresponding source and licence, safe config defaults, and user-level
   startup integration that starts the daemon during installation.

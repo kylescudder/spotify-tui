@@ -55,15 +55,21 @@ The matrix produces:
 The Spotify TUI executables in the Linux archives are musl builds to avoid
 depending on a particular glibc version. Every direct archive also contains a
 pinned Spotifyd runtime, its GPLv3 licence, third-party notices, README, and
-example themes. Linux uses Spotifyd's upstream default binaries after checking
-hard-coded SHA-512 values. macOS and Windows apply the checked-in authenticated
+example themes. Linux x86_64 uses Spotifyd's upstream default binary after
+checking its hard-coded SHA-512 value. The upstream ARM64 archive requires the
+obsolete OpenSSL 1.1 ABI, so ARM64 builds the same pinned source natively with
+ALSA, PulseAudio, MPRIS, and Rustls enabled. That build runs inside a
+digest-pinned Rust 1.88/Debian Bullseye container, giving it a glibc 2.31
+baseline rather than inheriting Ubuntu 24.04's newer ABI. CI inspects both Linux
+runtimes and rejects OpenSSL 1.1 or glibc requirements beyond each published
+baseline before packaging. macOS and Windows apply the checked-in authenticated
 local-control patch and build it with the portable Rodio backend from the exact
 upstream commit; upstream does not currently publish a Windows binary. The
-matching complete Spotifyd source archive and applied patch are included in the
-same release and checked against a pinned SHA-256 value. Unlike the musl Spotify TUI
-binary, upstream's Linux Spotifyd binary remains dynamically linked to standard
-audio, D-Bus, OpenSSL, and system libraries; release smoke tests install and
-exercise those runtime libraries explicitly.
+matching complete Spotifyd source archive and applied patches are included in
+the same release and checked against a pinned SHA-256 value. Unlike the musl
+Spotify TUI binary, Linux Spotifyd remains dynamically linked to standard
+audio, D-Bus, and system libraries; the x86_64 build also uses OpenSSL 3.
+Release smoke tests install and exercise those runtime libraries explicitly.
 
 Release-time generation replaces `@REPOSITORY@` in the installer sources with
 the actual GitHub repository. The installers preserve existing configurations;

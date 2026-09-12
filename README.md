@@ -95,9 +95,11 @@ session-MPRIS configuration and a systemd user service that is enabled and
 started immediately; macOS gets a LaunchAgent that is bootstrapped immediately.
 
 The bundled Linux Spotifyd is dynamically linked to the normal ALSA/PulseAudio,
-D-Bus, OpenSSL, and system runtime libraries. The installer does not invoke a
-system package manager to add those libraries. NixOS users should use the Nix
-flake, which supplies the complete runtime closure.
+D-Bus, and system runtime libraries. The x86_64 build requires glibc 2.34 and
+OpenSSL 3; the ARM64 Rustls build requires glibc 2.31 and has no OpenSSL runtime
+dependency. The installer does not invoke a system package manager to add those
+libraries. NixOS users should use the Nix flake, which supplies the complete
+runtime closure.
 
 To inspect the script or pin a version:
 

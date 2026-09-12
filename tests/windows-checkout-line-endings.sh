@@ -9,11 +9,15 @@ carriage_return=$(printf '\r')
 
 git -C "$repo_root" -c core.autocrlf=true checkout-index \
   --prefix="$fixture_dir/" -- \
+  packaging/spotifyd/apply-linux-portability.sh \
   packaging/spotifyd/apply-local-control.sh \
+  packaging/spotifyd/linux-rustls.patch \
   packaging/spotifyd/spotifyd.patch
 
 for path in \
+  packaging/spotifyd/apply-linux-portability.sh \
   packaging/spotifyd/apply-local-control.sh \
+  packaging/spotifyd/linux-rustls.patch \
   packaging/spotifyd/spotifyd.patch
 do
   if grep -q "$carriage_return" "$fixture_dir/$path"; then

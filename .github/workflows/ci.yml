@@ -104,6 +104,48 @@ jobs:
           --no-default-features --features local_control
           local_control::tests
 
+  spotifyd-linux-runtime:
+    name: Linux ARM64 Spotifyd runtime
+    runs-on: ubuntu-24.04-arm
+    container: rust:1.88.0-bullseye@sha256:b315f988b86912bafa7afd39a6ded0a497bf850ec36578ca9a3bdd6a14d5db4e
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pinned Spotifyd source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Spotifyd/spotifyd
+          ref: c5b94367014856a8c541dea565cbd332e034fb9e
+          path: spotifyd-upstream
+          persist-credentials: false
+
+      - name: Install native dependencies
+        run: sh scripts/install-spotifyd-bullseye-build-dependencies.sh
+
+      - name: Replace native TLS with Rustls
+        run: sh packaging/spotifyd/apply-linux-portability.sh spotifyd-upstream
+
+      - name: Cache Spotifyd build data
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: spotifyd-linux-runtime-arm64
+          workspaces: spotifyd-upstream -> target
+
+      - name: Build Linux Spotifyd runtime
+        run: >-
+          cargo build --locked --release
+          --manifest-path spotifyd-upstream/Cargo.toml
+          --no-default-features
+          --features alsa_backend,pulseaudio_backend,dbus_mpris
+
+      - name: Validate Linux Spotifyd runtime dependencies
+        env:
+          SPOTIFY_TUI_MAX_GLIBC: "2.31"
+        run: >-
+          sh scripts/validate-spotifyd-linux-runtime.sh
+          spotifyd-upstream/target/release/spotifyd
+
   nix:
     name: Nix flake (${{ matrix.os }})
     strategy:
