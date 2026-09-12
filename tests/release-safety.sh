@@ -88,6 +88,7 @@ spotifyd_build_step=$(step_block "Build pinned Spotifyd runtime")
 spotifyd_patch_step=$(step_block "Add Spotify TUI local control to Spotifyd")
 linux_runtime_step=$(step_block "Validate Linux Spotifyd runtime dependencies")
 homebrew_style_step=$(step_block "Validate formula style")
+homebrew_install_step=$(step_block "Install and test formula from staged source")
 arm_linux_release=$(matrix_entry ubuntu-24.04-arm)
 x86_linux_release=$(matrix_entry ubuntu-24.04)
 arm_runtime_job=$(job_block spotifyd-linux-runtime "$ci_workflow")
@@ -173,6 +174,10 @@ printf '%s\n' "$spotifyd_build_step" |
 printf '%s\n' "$homebrew_style_step" |
   grep -Fq 'sh scripts/validate-homebrew-formula.sh bundle/spotify-tui.rb' ||
   fail "release rehearsal must validate the formula through the staged-tap helper"
+
+printf '%s\n' "$homebrew_install_step" |
+  grep -Fq 'sh scripts/stage-homebrew-formula.sh' ||
+  fail "release rehearsal must add an explicit version only to its local-source formula"
 
 grep -Fq "brew tap-new --no-git \"\$tap_name\"" "$formula_validator" ||
   fail "Homebrew validation must stage the formula in a disposable tap"

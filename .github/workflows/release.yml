@@ -510,7 +510,8 @@ jobs:
           cp bundle/spotify-tui-source.tar.gz "$local_source"
           source_url="file://${local_source}"
           tap_formula="$(brew --repository spotify-tui/rehearsal)/Formula/spotify-tui.rb"
-          sed "s|^  url .*|  url \"${source_url}\"|" "$tap_formula" > "$RUNNER_TEMP/spotify-tui.rb"
+          sh scripts/stage-homebrew-formula.sh \
+            "$tap_formula" "$VERSION" "$source_url" "$RUNNER_TEMP/spotify-tui.rb"
           cp "$RUNNER_TEMP/spotify-tui.rb" "$tap_formula"
           brew install spotify-tui/rehearsal/spotify-tui
           brew test spotify-tui/rehearsal/spotify-tui

@@ -19,6 +19,7 @@ infra-check:
 	sh tests/install-sh.sh
 	sh tests/release-safety.sh
 	sh tests/render-homebrew-formula.sh
+	sh tests/stage-homebrew-formula.sh
 	sh tests/validate-spotifyd-linux-runtime.sh
 	sh tests/windows-checkout-line-endings.sh
 
