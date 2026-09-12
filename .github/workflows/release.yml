@@ -85,7 +85,7 @@ jobs:
         run: rustup component add clippy rustfmt
 
       - name: Cache Rust build data
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release-preflight
           save-if: ${{ github.event_name != 'pull_request' }}
@@ -163,7 +163,7 @@ jobs:
         run: sh packaging/spotifyd/apply-linux-portability.sh spotifyd-upstream
 
       - name: Cache Spotifyd build data
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release-spotifyd-linux-arm64-bullseye
           workspaces: spotifyd-upstream -> target
@@ -259,7 +259,7 @@ jobs:
           sudo apt-get install --yes binutils musl-tools
 
       - name: Cache Rust build data
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: release-${{ matrix.target }}
           workspaces: |
