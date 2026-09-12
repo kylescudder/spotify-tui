@@ -2,6 +2,7 @@ class SpotifyTui < Formula
   desc "Local-first terminal Spotify interface powered by spotifyd"
   homepage "https://github.com/@REPOSITORY@"
   url "https://github.com/@REPOSITORY@/releases/download/v@VERSION@/spotify-tui-source.tar.gz"
+  version "@VERSION@"
   sha256 "@SOURCE_SHA256@"
   license all_of: ["MIT", "GPL-3.0-only"]
 
