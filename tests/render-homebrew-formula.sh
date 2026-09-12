@@ -23,6 +23,11 @@ grep -F 'service do' "$output" >/dev/null
 grep -F 'run [opt_bin/"spotifyd", "--no-daemon"]' "$output" >/dev/null
 grep -F 'keep_alive true' "$output" >/dev/null
 
+if grep -Eq '^  version ' "$output"; then
+  echo "published formula must let Homebrew infer its version from the release URL" >&2
+  exit 1
+fi
+
 if grep -E '@(REPOSITORY|VERSION|SOURCE_SHA256)@' "$output" >/dev/null; then
   echo "rendered formula still contains placeholders" >&2
   exit 1

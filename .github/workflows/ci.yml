@@ -186,6 +186,9 @@ jobs:
       - name: Test Homebrew formula renderer
         run: sh tests/render-homebrew-formula.sh
 
+      - name: Test Homebrew formula staging
+        run: sh tests/stage-homebrew-formula.sh
+
       - name: Validate staged Homebrew formula
         if: runner.os == 'macOS'
         shell: bash
