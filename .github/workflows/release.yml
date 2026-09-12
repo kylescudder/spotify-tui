@@ -139,9 +139,60 @@ jobs:
           nix flake check --print-build-logs
           nix build --print-build-logs
 
+  spotifyd-linux-arm64:
+    name: Portable Linux ARM64 Spotifyd runtime
+    needs: preflight
+    runs-on: ubuntu-24.04-arm
+    container: rust:1.88.0-bullseye@sha256:b315f988b86912bafa7afd39a6ded0a497bf850ec36578ca9a3bdd6a14d5db4e
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out pinned Spotifyd source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Spotifyd/spotifyd
+          ref: c5b94367014856a8c541dea565cbd332e034fb9e
+          path: spotifyd-upstream
+          persist-credentials: false
+
+      - name: Install native dependencies
+        run: sh scripts/install-spotifyd-bullseye-build-dependencies.sh
+
+      - name: Replace native TLS with Rustls
+        run: sh packaging/spotifyd/apply-linux-portability.sh spotifyd-upstream
+
+      - name: Cache Spotifyd build data
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: release-spotifyd-linux-arm64-bullseye
+          workspaces: spotifyd-upstream -> target
+
+      - name: Build Linux Spotifyd runtime
+        run: >-
+          cargo build --locked --release
+          --manifest-path spotifyd-upstream/Cargo.toml
+          --no-default-features
+          --features alsa_backend,pulseaudio_backend,dbus_mpris
+
+      - name: Validate portable Linux Spotifyd runtime
+        env:
+          SPOTIFY_TUI_MAX_GLIBC: "2.31"
+        run: >-
+          sh scripts/validate-spotifyd-linux-runtime.sh
+          spotifyd-upstream/target/release/spotifyd
+
+      - name: Upload Linux ARM64 Spotifyd runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: spotifyd-linux-arm64-runtime
+          path: spotifyd-upstream/target/release/spotifyd
+          if-no-files-found: error
+          retention-days: 7
+
   binaries:
     name: Binary (${{ matrix.target }})
-    needs: preflight
+    needs: [preflight, spotifyd-linux-arm64]
     strategy:
       fail-fast: false
       matrix:
@@ -150,26 +201,34 @@ jobs:
             target: x86_64-unknown-linux-musl
             archive: tar
             spotifyd_mode: download
+            spotifyd_patch: false
+            spotifyd_max_glibc: "2.34"
             spotifyd_asset: spotifyd-linux-x86_64-default.tar.gz
             spotifyd_sha512: c2b73784bf904d40d9a58f6c43e215a7be448f01039ae899ca5dbe4cdb9369d77e4d43c3a1e63fef7ca5adda365eac37f1d91c1e8018391afa907660552bd8db
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             archive: tar
-            spotifyd_mode: download
-            spotifyd_asset: spotifyd-linux-aarch64-default.tar.gz
-            spotifyd_sha512: 23d7f48a05895b25722c467178d17c6c3f1e67efe0e2eea42a5362d61f0b46927635cc30d61ef64f7e1147523fafbaeda8bda9afe36cebccb704bdaf3d9a61e9
+            spotifyd_mode: artifact
+            spotifyd_patch: false
+            spotifyd_max_glibc: "2.31"
           - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar
             spotifyd_mode: build
+            spotifyd_patch: true
+            spotifyd_features: rodio_backend,local_control
           - os: macos-15
             target: aarch64-apple-darwin
             archive: tar
             spotifyd_mode: build
+            spotifyd_patch: true
+            spotifyd_features: rodio_backend,local_control
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             archive: zip
             spotifyd_mode: build
+            spotifyd_patch: true
+            spotifyd_features: rodio_backend,local_control
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out source
@@ -184,7 +243,7 @@ jobs:
           persist-credentials: false
 
       - name: Add Spotify TUI local control to Spotifyd
-        if: matrix.spotifyd_mode == 'build'
+        if: matrix.spotifyd_patch == true
         shell: bash
         run: sh packaging/spotifyd/apply-local-control.sh spotifyd-upstream
 
@@ -197,7 +256,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes musl-tools
+          sudo apt-get install --yes binutils musl-tools
 
       - name: Cache Rust build data
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
@@ -230,27 +289,53 @@ jobs:
           echo "${SPOTIFYD_SHA512}  $RUNNER_TEMP/spotifyd/${SPOTIFYD_ASSET}" | sha512sum --check
           tar -xzf "$RUNNER_TEMP/spotifyd/${SPOTIFYD_ASSET}" -C "$RUNNER_TEMP/spotifyd"
 
-      - name: Build pinned Spotifyd runtime
-        if: matrix.spotifyd_mode == 'build'
+      - name: Download portable Linux ARM64 Spotifyd runtime
+        if: matrix.spotifyd_mode == 'artifact'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: spotifyd-linux-arm64-runtime
+          path: ${{ runner.temp }}/spotifyd
+
+      - name: Test patched Spotifyd local control
+        if: matrix.spotifyd_patch == true
         shell: bash
         run: |
           cargo test --locked \
             --manifest-path spotifyd-upstream/Cargo.toml \
-            --no-default-features --features rodio_backend,local_control \
+            --no-default-features --features ${{ matrix.spotifyd_features }} \
             local_control::tests
+
+      - name: Build pinned Spotifyd runtime
+        if: matrix.spotifyd_mode == 'build'
+        shell: bash
+        run: |
           cargo build --locked --release \
             --manifest-path spotifyd-upstream/Cargo.toml \
-            --no-default-features --features rodio_backend,local_control
+            --no-default-features --features ${{ matrix.spotifyd_features }}
+
+      - name: Validate Linux Spotifyd runtime dependencies
+        if: runner.os == 'Linux'
+        env:
+          SPOTIFY_TUI_MAX_GLIBC: ${{ matrix.spotifyd_max_glibc }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ '${{ matrix.spotifyd_mode }}' == build ]]; then
+            spotifyd_binary="$PWD/spotifyd-upstream/target/release/spotifyd"
+          else
+            spotifyd_binary="$RUNNER_TEMP/spotifyd/spotifyd"
+          fi
+          sh scripts/validate-spotifyd-linux-runtime.sh "$spotifyd_binary"
 
       - name: Package Unix binaries
         if: matrix.archive == 'tar'
         shell: bash
         run: |
           set -euo pipefail
-          if [[ '${{ matrix.spotifyd_mode }}' == download ]]; then
-            spotifyd_binary="$RUNNER_TEMP/spotifyd/spotifyd"
-          else
+          if [[ '${{ matrix.spotifyd_mode }}' == build ]]; then
             spotifyd_binary="$PWD/spotifyd-upstream/target/release/spotifyd"
+          else
+            spotifyd_binary="$RUNNER_TEMP/spotifyd/spotifyd"
           fi
           sh scripts/package-unix.sh \
             '${{ matrix.target }}' \

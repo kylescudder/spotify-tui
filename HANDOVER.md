@@ -234,8 +234,11 @@ The release infrastructure is implemented in this repository:
   tampered-artifact paths have offline tests.
 - Direct archives include Spotifyd's GPLv3 licence and publish its complete
   corresponding 0.4.2 source plus the applied patch beside the binaries. Linux
-  consumes hash-pinned upstream MPRIS builds; macOS and Windows build the Rodio
-  backend plus local control from pinned upstream commit
+  uses the hash-pinned upstream x86_64 MPRIS build and a native ARM64 source
+  build with ALSA, PulseAudio, MPRIS, and Rustls. ARM64 builds in a digest-pinned
+  glibc 2.31 container; both Linux artifacts are checked for obsolete OpenSSL
+  and newer-than-supported glibc dependencies. macOS and Windows build the
+  Rodio backend plus local control from pinned upstream commit
   `c5b94367014856a8c541dea565cbd332e034fb9e`.
 - `packaging/homebrew/spotify-tui.rb.template` is rendered with the tagged source
   checksum and defines the Spotifyd service used by the lifecycle adapter. It is
@@ -318,9 +321,12 @@ they are no longer open implementation tasks.
      omitted explicitly without affecting the Spotify TUI installation.
 
 3. Activate and prove the release infrastructure.
-   - Re-run the non-publishing GitHub Actions rehearsal after the release
-     packaging fixes and require every Linux, macOS, Windows, Nix, installer, and
-     Homebrew job to pass. The prior rehearsal already validated
+   - Re-run the non-publishing GitHub Actions rehearsal after the Linux ARM64
+     Spotifyd runtime fix and require every Linux, macOS, Windows, Nix,
+     installer, and Homebrew job to pass. The prior rehearsal passed every job
+     except the ARM64 installer, whose upstream Spotifyd archive required
+     OpenSSL 1.1. Its replacement also has ordinary CI coverage for its Rustls
+     configuration and glibc baseline. The prior rehearsal already validated
      `HOMEBREW_TAP_SSH_KEY` against the tap's production `main` branch with a
      content-neutral empty commit.
    - Prove that a tagged release publishes and attests its archives before it
