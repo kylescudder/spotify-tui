@@ -78,6 +78,15 @@ and starts that service through
 `brew services`; subsequent launches reuse it. The release workflow styles,
 audits, builds, installs, and tests the formula on macOS before updating the tap.
 
+The formula conflicts with Homebrew's stock `spotifyd` formula because Spotify
+TUI requires its patched runtime and both packages install a `spotifyd` command.
+Stop and unlink the stock service before installing Spotify TUI:
+
+```bash
+brew services stop spotifyd
+brew unlink spotifyd
+```
+
 ### Direct installer on Linux or macOS
 
 ```bash

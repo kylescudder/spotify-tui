@@ -9,6 +9,8 @@ class SpotifyTui < Formula
   depends_on "rust" => :build
   depends_on "openssl@3"
 
+  conflicts_with "spotifyd", because: "both install a `spotifyd` binary"
+
   resource "spotifyd" do
     url "https://github.com/Spotifyd/spotifyd/archive/c5b94367014856a8c541dea565cbd332e034fb9e.tar.gz"
     sha256 "d711e441d709e76f93b4ab297782d01dee6aa166e4015746fd5230d61fcaba71"
