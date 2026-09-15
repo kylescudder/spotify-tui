@@ -2,11 +2,11 @@
 
 ## Objective
 
-Build a polished, keyboard-first Spotify TUI that remains useful when Spotify's
-Web API is unavailable, rate-limited, or changes. Audio playback is always local
-through `spotifyd`; optional Spotify Web API catalogue access supplies search
-and browse data and starts exact catalogue selections on the active Spotifyd
-device without becoming a requirement for the now-playing controller.
+Build a polished, keyboard-first Spotify TUI. Audio playback is always local
+through `spotifyd`; Spotify Web API catalogue access supplies search and browse
+data and starts exact catalogue selections on the active Spotifyd device. A
+startup preflight requires its client configuration and local authorization
+token before the player opens.
 
 The target machine is Kyle's NixOS workstation (`stevie`) using Hyprland,
 Ghostty, PipeWire, Home Manager, and the dotfiles repository at
@@ -168,15 +168,15 @@ directory with owner-only Unix permissions; no client secret is accepted.
 worker owns HTTP and token refresh away from the render/input thread. Selecting
 playable content passes its URI to `PlaybackSource`, so the Web API never
 streams audio or becomes the playback transport.
-Source initialization is lazy: a first search with no usable token opens the
-browser from the catalogue worker, waits for the loopback callback, and then
-continues that same request. Authentication errors remain retryable without
-restarting the TUI.
+Startup is gated by a two-step setup flow: it persists the user-supplied client
+ID without discarding existing configuration, then opens the browser for the
+loopback authorization callback. Missing, stale, and corrupt tokens return to
+that retryable flow before the player opens.
 
 Spotify's Development Mode restrictions still apply. Spotify uses
 per-developer quota buckets, returns `429` for quota/rate limiting, limits apps
 to five allowlisted users, and changed or removed endpoints in 2026. Catalogue
-features must remain lazy, optional, and resilient to `403`/`429` responses.
+features must remain resilient to `403`/`429` responses.
 
 Primary references:
 

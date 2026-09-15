@@ -61,6 +61,14 @@ pub fn authenticate(config: &SpotifyApiConfig) -> Result<PathBuf, CatalogAuthErr
     })
 }
 
+pub fn is_authenticated(config: &SpotifyApiConfig) -> Result<bool, CatalogAuthError> {
+    match load_token(config) {
+        Ok(_) => Ok(true),
+        Err(error) if error.requires_authentication() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn authenticate_from_tui(
     config: &SpotifyApiConfig,
     cancelled: &AtomicBool,

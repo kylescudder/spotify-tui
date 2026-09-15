@@ -11,9 +11,9 @@ use thiserror::Error;
 pub const CONFIG_VERSION: u32 = 1;
 pub const CONFIG_PATH_ENV: &str = "SPOTIFY_TUI_CONFIG";
 pub const BUILT_IN_THEME_NAMES: [&str; 3] = ["spotify", "midnight", "high-contrast"];
+pub const SPOTIFY_API_REDIRECT_URI: &str = "http://127.0.0.1:8989/callback";
 
 const DEFAULT_THEME_NAME: &str = "spotify";
-const DEFAULT_SPOTIFY_API_REDIRECT_URI: &str = "http://127.0.0.1:8989/callback";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -83,6 +83,73 @@ impl Config {
 
     pub fn source_path(&self) -> Option<&Path> {
         self.source_path.as_deref()
+    }
+
+    pub fn config_path() -> Result<PathBuf, ConfigError> {
+        if let Some(path) = env::var_os(CONFIG_PATH_ENV) {
+            if path.is_empty() {
+                return Err(ConfigError::EmptyPathOverride);
+            }
+            return Ok(PathBuf::from(path));
+        }
+
+        default_config_path().ok_or(ConfigError::NoConfigDirectory)
+    }
+
+    pub fn save_spotify_api_client_id(client_id: &str) -> Result<PathBuf, ConfigError> {
+        Self::save_spotify_api_client_id_to(&Self::config_path()?, client_id)
+    }
+
+    fn save_spotify_api_client_id_to(path: &Path, client_id: &str) -> Result<PathBuf, ConfigError> {
+        let client_id = client_id.trim();
+        SpotifyApiDefinition {
+            client_id: client_id.to_owned(),
+            redirect_uri: default_spotify_api_redirect_uri(),
+            token_cache: None,
+        }
+        .resolve()?;
+
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(source) => {
+                return Err(ConfigError::Read {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        };
+        if !contents.is_empty() {
+            let config = Self::parse(&contents, Some(path.to_owned()))?;
+            if config.spotify_api().is_some() {
+                return Ok(path.to_owned());
+            }
+        }
+
+        let mut updated = if contents.trim().is_empty() {
+            format!("version = {CONFIG_VERSION}\n")
+        } else {
+            contents
+        };
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str("\n[spotify_api]\nclient_id = ");
+        updated.push_str(&toml::Value::String(client_id.to_owned()).to_string());
+        updated.push('\n');
+
+        Self::parse(&updated, Some(path.to_owned()))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+                path: path.to_owned(),
+                source,
+            })?;
+        }
+        fs::write(path, updated).map_err(|source| ConfigError::Write {
+            path: path.to_owned(),
+            source,
+        })?;
+        Ok(path.to_owned())
     }
 
     fn load_optional_path(path: &Path) -> Result<Self, ConfigError> {
@@ -227,6 +294,14 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
+    #[error("could not determine a directory for config.toml")]
+    NoConfigDirectory,
+    #[error("could not write config file {path}: {source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("could not parse {location}: {source}")]
     Toml {
         location: String,
@@ -359,7 +434,7 @@ impl SpotifyApiDefinition {
 }
 
 fn default_spotify_api_redirect_uri() -> String {
-    DEFAULT_SPOTIFY_API_REDIRECT_URI.to_owned()
+    SPOTIFY_API_REDIRECT_URI.to_owned()
 }
 
 fn validate_startup_uri(value: Option<String>) -> Result<Option<String>, ConfigError> {
@@ -573,6 +648,65 @@ token_cache = "/tmp/spotify-tui-token.json"
             spotify_api.token_cache(),
             Some(Path::new("/tmp/spotify-tui-token.json"))
         );
+    }
+
+    #[test]
+    fn onboarding_creates_a_complete_config_with_the_client_id() {
+        let unique = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+        let directory = env::temp_dir().join(format!(
+            "spotify-tui-onboarding-config-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("config.toml");
+
+        Config::save_spotify_api_client_id_to(&path, "  client-id  ")
+            .expect("onboarding should create config");
+        let config = Config::load_from(&path).expect("created config should load");
+        let contents = fs::read_to_string(&path).expect("created config should be readable");
+        let _ = fs::remove_dir_all(directory);
+
+        assert_eq!(
+            config
+                .spotify_api()
+                .expect("Spotify API should be configured")
+                .client_id(),
+            "client-id"
+        );
+        assert!(contents.contains("version = 1"));
+        assert!(contents.contains("[spotify_api]"));
+    }
+
+    #[test]
+    fn onboarding_preserves_existing_configuration_when_adding_spotify() {
+        let unique = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+        let directory = env::temp_dir().join(format!(
+            "spotify-tui-existing-config-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("config.toml");
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        fs::write(
+            &path,
+            r##"# Keep this comment.
+version = 1
+theme = "custom"
+
+[themes.custom]
+accent = "#123456"
+"##,
+        )
+        .expect("fixture should be written");
+
+        Config::save_spotify_api_client_id_to(&path, "client-id")
+            .expect("onboarding should extend config");
+        let config = Config::load_from(&path).expect("updated config should load");
+        let contents = fs::read_to_string(&path).expect("updated config should be readable");
+        let _ = fs::remove_dir_all(directory);
+
+        assert_eq!(config.theme_name(), "custom");
+        assert_eq!(config.theme().accent(), Color::Rgb(0x12, 0x34, 0x56));
+        assert!(contents.contains("# Keep this comment."));
+        assert!(contents.contains("client_id = \"client-id\""));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyEventKind},
+    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -24,6 +24,7 @@ use spotify_tui::{
     cli::{self, LaunchMode},
     config::{Config, Theme},
     input,
+    onboarding::{OnboardingAction, OnboardingState},
     playback::PlaybackCommand,
     playback_runtime::{PlaybackEvent, PlaybackRuntime},
     spotifyd_lifecycle::SpotifydLifecycle,
@@ -93,7 +94,9 @@ fn run_catalog_auth_command() -> Result<(), Box<dyn Error>> {
 }
 
 fn run_tui_app() -> Result<(), Box<dyn Error>> {
-    let config = Config::load()?;
+    let Some(config) = prepare_config()? else {
+        return Ok(());
+    };
     let mut app = AppState::default();
     let lifecycle = SpotifydLifecycle::from_environment()?;
     let lifecycle_error = lifecycle
@@ -102,15 +105,16 @@ fn run_tui_app() -> Result<(), Box<dyn Error>> {
         .map(|error| error.to_string());
     let playback = PlaybackRuntime::start(config.startup_uri().map(str::to_owned))?;
     let artwork = ArtworkRuntime::start()?;
-    let catalog = config
-        .spotify_api()
-        .cloned()
-        .map(CatalogRuntime::start)
-        .transpose()?;
+    let catalog = CatalogRuntime::start(
+        config
+            .spotify_api()
+            .cloned()
+            .expect("onboarding guarantees Spotify API configuration"),
+    )?;
     let services = RuntimeServices {
         playback: &playback,
         artwork: &artwork,
-        catalog: catalog.as_ref(),
+        catalog: &catalog,
         lifecycle: &lifecycle,
         lifecycle_error: RefCell::new(lifecycle_error),
     };
@@ -130,6 +134,55 @@ fn run_tui_app() -> Result<(), Box<dyn Error>> {
                     ))),
                 }
             }
+        }
+    }
+}
+
+fn prepare_config() -> Result<Option<Config>, Box<dyn Error>> {
+    let mut config = Config::load()?;
+    let config_path = Config::config_path()?;
+    let mut configuration_error = None;
+    let mut authentication_error = None;
+
+    loop {
+        if config.spotify_api().is_none() {
+            let mut state = OnboardingState::configure(config_path.clone());
+            if let Some(error) = configuration_error.take() {
+                state.set_error(error);
+            }
+            match run_onboarding_session(state, config.theme())? {
+                OnboardingAction::SaveClientId(client_id) => {
+                    match Config::save_spotify_api_client_id(&client_id) {
+                        Ok(_) => config = Config::load()?,
+                        Err(error) => configuration_error = Some(error.to_string()),
+                    }
+                }
+                OnboardingAction::Quit => return Ok(None),
+                OnboardingAction::None | OnboardingAction::Authenticate => {}
+            }
+            continue;
+        }
+
+        let spotify_api = config
+            .spotify_api()
+            .expect("Spotify API configuration was checked above");
+        if catalog_auth::is_authenticated(spotify_api)? {
+            return Ok(Some(config));
+        }
+
+        let state = OnboardingState::authorize(config_path.clone(), authentication_error.take());
+        match run_onboarding_session(state, config.theme())? {
+            OnboardingAction::Authenticate => {
+                println!("Opening Spotify authorization in your browser…");
+                match catalog_auth::authenticate(spotify_api) {
+                    Ok(path) => {
+                        println!("Spotify authorization saved to {}.", path.display());
+                    }
+                    Err(error) => authentication_error = Some(error.to_string()),
+                }
+            }
+            OnboardingAction::Quit => return Ok(None),
+            OnboardingAction::None | OnboardingAction::SaveClientId(_) => {}
         }
     }
 }
@@ -155,7 +208,7 @@ fn report_restart_warning(outcome: &AuthOutcome) {
 struct RuntimeServices<'a> {
     playback: &'a PlaybackRuntime,
     artwork: &'a ArtworkRuntime,
-    catalog: Option<&'a CatalogRuntime>,
+    catalog: &'a CatalogRuntime,
     lifecycle: &'a SpotifydLifecycle,
     lifecycle_error: RefCell<Option<String>>,
 }
@@ -189,7 +242,7 @@ fn start_terminal() -> io::Result<Tui> {
     enable_raw_mode()?;
 
     let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
         disable_raw_mode()?;
         return Err(error);
     }
@@ -199,8 +252,44 @@ fn start_terminal() -> io::Result<Tui> {
 
 fn restore_terminal(terminal: &mut Tui) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()
+}
+
+fn run_onboarding_session(
+    mut state: OnboardingState,
+    theme: &Theme,
+) -> io::Result<OnboardingAction> {
+    let mut terminal = start_terminal()?;
+    let result = loop {
+        terminal.draw(|frame| ui::render_onboarding(frame, &state, theme))?;
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                let action = state.handle_key(key);
+                if action != OnboardingAction::None {
+                    break Ok(action);
+                }
+            }
+            Event::Paste(text) => state.paste(&text),
+            _ => {}
+        }
+    };
+    let restore_result = restore_terminal(&mut terminal);
+
+    match result {
+        Ok(action) => {
+            restore_result?;
+            Ok(action)
+        }
+        Err(error) => {
+            let _ = restore_result;
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,33 +333,18 @@ fn run(
                         dispatch(app, services.playback, PlaybackCommand::OpenUri(uri));
                     }
                     BrowserEffect::PlayTrack(target) => {
-                        if let Some(catalog) = services.catalog {
-                            if let Err(error) = catalog.play(target) {
-                                app.reduce(AppEvent::PlaybackFailed(error.to_string()));
-                            }
-                        } else {
-                            dispatch(
-                                app,
-                                services.playback,
-                                PlaybackCommand::OpenUri(target.uri().to_owned()),
-                            );
+                        if let Err(error) = services.catalog.play(target) {
+                            app.reduce(AppEvent::PlaybackFailed(error.to_string()));
                         }
                     }
                     BrowserEffect::Fetch {
                         request_id,
                         request,
                     } => {
-                        if let Some(catalog) = services.catalog {
-                            if let Err(error) = catalog.fetch(request_id, request) {
-                                app.browser_mut().resolve(CatalogEvent::Failed {
-                                    request_id,
-                                    message: error.to_string(),
-                                });
-                            }
-                        } else {
+                        if let Err(error) = services.catalog.fetch(request_id, request) {
                             app.browser_mut().resolve(CatalogEvent::Failed {
                                 request_id,
-                                message: "Spotify catalogue is not configured. Add [spotify_api] client_id to config.toml, then search again.".to_owned(),
+                                message: error.to_string(),
                             });
                         }
                     }
@@ -427,10 +501,7 @@ fn sync_catalog_artwork(app: &mut AppState, artwork: &ArtworkRuntime) {
 }
 
 fn drain_catalog_events(app: &mut AppState, services: &RuntimeServices<'_>) {
-    let Some(catalog) = services.catalog else {
-        return;
-    };
-    while let Some(event) = catalog.try_event() {
+    while let Some(event) = services.catalog.try_event() {
         match event {
             CatalogEvent::PlaybackFailed { message } => {
                 app.reduce(AppEvent::PlaybackFailed(message));
