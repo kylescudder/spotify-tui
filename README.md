@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/spotify-tui-icon.png" alt="Spotify TUI icon: a terminal prompt beside an audio level meter" width="192">
+</p>
+
 # Spotify TUI
 
 A local-first terminal Spotify interface powered by `spotifyd`. Playback,
