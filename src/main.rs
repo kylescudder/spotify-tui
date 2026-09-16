@@ -153,6 +153,7 @@ fn prepare_config() -> Result<Option<Config>, Box<dyn Error>> {
                     OnboardingState::edit_client_id(
                         config_path.clone(),
                         spotify_api.client_id().to_owned(),
+                        spotify_api.redirect_uri().to_owned(),
                     )
                 },
             );
@@ -188,6 +189,7 @@ fn prepare_config() -> Result<Option<Config>, Box<dyn Error>> {
         let state = OnboardingState::authorize(
             config_path.clone(),
             spotify_api.client_id().to_owned(),
+            spotify_api.redirect_uri().to_owned(),
             authentication_error.take(),
         );
         match run_onboarding_session(state, config.theme())? {

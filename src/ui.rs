@@ -11,7 +11,7 @@ use crate::{
     artwork::ArtworkRenderer,
     browser::BrowserView,
     catalog::CatalogItemKind,
-    config::{SPOTIFY_API_REDIRECT_URI, Theme},
+    config::Theme,
     onboarding::{OnboardingStage, OnboardingState},
 };
 
@@ -115,7 +115,7 @@ fn render_configure_onboarding(
         frame,
         rows[6],
         "02",
-        &format!("Add Redirect URI  {SPOTIFY_API_REDIRECT_URI}"),
+        &format!("Add Redirect URI  {}", state.redirect_uri()),
         theme,
     );
 
@@ -316,7 +316,7 @@ fn render_compact_onboarding(
             ),
             Line::from("Create a Spotify developer app, then add:")
                 .style(Style::default().fg(theme.foreground())),
-            Line::from(SPOTIFY_API_REDIRECT_URI).style(Style::default().fg(theme.warning())),
+            Line::from(state.redirect_uri()).style(Style::default().fg(theme.warning())),
             Line::from(format!("Client ID > {}█", state.client_id()))
                 .style(Style::default().fg(theme.foreground())),
             Line::from(
@@ -1017,8 +1017,12 @@ background = "#010203"
     #[test]
     fn configuration_onboarding_explains_every_required_value() {
         let config = Config::default();
-        let mut state =
-            OnboardingState::configure(std::path::PathBuf::from("/tmp/spotify-tui/config.toml"));
+        let redirect_uri = "http://127.0.0.1:9876/return";
+        let mut state = OnboardingState::edit_client_id(
+            std::path::PathBuf::from("/tmp/spotify-tui/config.toml"),
+            String::new(),
+            redirect_uri.to_owned(),
+        );
         for character in "client-id".chars() {
             state.handle_key(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char(character),
@@ -1036,7 +1040,7 @@ background = "#010203"
         for expected in [
             "SETUP  1 / 2",
             "developer.spotify.com/dashboard",
-            SPOTIFY_API_REDIRECT_URI,
+            redirect_uri,
             "client-id",
             "/tmp/spotify-tui/config.toml",
             "No client secret",
@@ -1051,6 +1055,7 @@ background = "#010203"
         let state = OnboardingState::authorize(
             std::path::PathBuf::from("/tmp/spotify-tui/config.toml"),
             "client-id".to_owned(),
+            "http://127.0.0.1:8989/callback".to_owned(),
             None,
         );
         let mut terminal =

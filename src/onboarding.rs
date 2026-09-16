@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::config::SPOTIFY_API_REDIRECT_URI;
+
 const MAX_CLIENT_ID_LENGTH: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,28 +25,40 @@ pub enum OnboardingAction {
 pub struct OnboardingState {
     stage: OnboardingStage,
     client_id: String,
+    redirect_uri: String,
     config_path: PathBuf,
     error: Option<String>,
 }
 
 impl OnboardingState {
     pub fn configure(config_path: PathBuf) -> Self {
-        Self::edit_client_id(config_path, String::new())
+        Self::edit_client_id(
+            config_path,
+            String::new(),
+            SPOTIFY_API_REDIRECT_URI.to_owned(),
+        )
     }
 
-    pub fn edit_client_id(config_path: PathBuf, client_id: String) -> Self {
+    pub fn edit_client_id(config_path: PathBuf, client_id: String, redirect_uri: String) -> Self {
         Self {
             stage: OnboardingStage::Configure,
             client_id,
+            redirect_uri,
             config_path,
             error: None,
         }
     }
 
-    pub fn authorize(config_path: PathBuf, client_id: String, error: Option<String>) -> Self {
+    pub fn authorize(
+        config_path: PathBuf,
+        client_id: String,
+        redirect_uri: String,
+        error: Option<String>,
+    ) -> Self {
         Self {
             stage: OnboardingStage::Authorize,
             client_id,
+            redirect_uri,
             config_path,
             error,
         }
@@ -56,6 +70,10 @@ impl OnboardingState {
 
     pub fn client_id(&self) -> &str {
         &self.client_id
+    }
+
+    pub fn redirect_uri(&self) -> &str {
+        &self.redirect_uri
     }
 
     pub fn config_path(&self) -> &Path {
@@ -182,8 +200,12 @@ mod tests {
 
     #[test]
     fn authorization_requires_an_explicit_confirmation() {
-        let mut state =
-            OnboardingState::authorize(PathBuf::from("config.toml"), "client-id".to_owned(), None);
+        let mut state = OnboardingState::authorize(
+            PathBuf::from("config.toml"),
+            "client-id".to_owned(),
+            SPOTIFY_API_REDIRECT_URI.to_owned(),
+            None,
+        );
 
         assert_eq!(
             state.handle_key(key(KeyCode::Enter)),
@@ -198,12 +220,16 @@ mod tests {
 
     #[test]
     fn correcting_a_client_id_can_clear_the_existing_value() {
-        let mut state =
-            OnboardingState::edit_client_id(PathBuf::from("config.toml"), "mistyped".to_owned());
+        let mut state = OnboardingState::edit_client_id(
+            PathBuf::from("config.toml"),
+            "mistyped".to_owned(),
+            "http://127.0.0.1:9876/return".to_owned(),
+        );
 
         state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         state.paste("corrected");
 
         assert_eq!(state.client_id(), "corrected");
+        assert_eq!(state.redirect_uri(), "http://127.0.0.1:9876/return");
     }
 }
