@@ -152,7 +152,7 @@ fn render_configure_onboarding(
         rows[9],
     );
     frame.render_widget(
-        Paragraph::new("Enter save & continue  ·  Esc quit")
+        Paragraph::new("Enter save & continue  ·  Ctrl-U clear  ·  Esc quit")
             .style(Style::default().fg(theme.muted()))
             .alignment(Alignment::Center),
         rows[11],
@@ -269,7 +269,7 @@ fn render_authorize_onboarding(
         rows[8],
     );
     frame.render_widget(
-        Paragraph::new("Enter continue  ·  q quit")
+        Paragraph::new("Enter continue  ·  e edit client ID  ·  q quit")
             .style(Style::default().fg(theme.muted()))
             .alignment(Alignment::Center),
         rows[10],
@@ -319,13 +319,16 @@ fn render_compact_onboarding(
             Line::from(SPOTIFY_API_REDIRECT_URI).style(Style::default().fg(theme.warning())),
             Line::from(format!("Client ID > {}█", state.client_id()))
                 .style(Style::default().fg(theme.foreground())),
-            Line::from(state.error().unwrap_or("Enter continue · Esc quit")).style(
-                Style::default().fg(if state.error().is_some() {
-                    theme.error()
-                } else {
-                    theme.muted()
-                }),
-            ),
+            Line::from(
+                state
+                    .error()
+                    .unwrap_or("Enter continue · Ctrl-U clear · Esc quit"),
+            )
+            .style(Style::default().fg(if state.error().is_some() {
+                theme.error()
+            } else {
+                theme.muted()
+            })),
         ]),
         OnboardingStage::Authorize => Text::from(vec![
             Line::from("SETUP 2 / 2").style(
@@ -335,13 +338,16 @@ fn render_compact_onboarding(
             ),
             Line::from("Client ID saved. Authorize Spotify to create the local token.")
                 .style(Style::default().fg(theme.foreground())),
-            Line::from(state.error().unwrap_or("Enter open Spotify · q quit")).style(
-                Style::default().fg(if state.error().is_some() {
-                    theme.error()
-                } else {
-                    theme.muted()
-                }),
-            ),
+            Line::from(
+                state
+                    .error()
+                    .unwrap_or("Enter open Spotify · e edit client ID · q quit"),
+            )
+            .style(Style::default().fg(if state.error().is_some() {
+                theme.error()
+            } else {
+                theme.muted()
+            })),
         ]),
     };
     frame.render_widget(
@@ -1044,6 +1050,7 @@ background = "#010203"
         let config = Config::default();
         let state = OnboardingState::authorize(
             std::path::PathBuf::from("/tmp/spotify-tui/config.toml"),
+            "client-id".to_owned(),
             None,
         );
         let mut terminal =
@@ -1060,6 +1067,7 @@ background = "#010203"
             "Approve in Spotify",
             "Token saved locally",
             "Open Spotify",
+            "e edit client ID",
         ] {
             assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
         }

@@ -7,6 +7,7 @@ use std::{
 use ratatui::style::Color;
 use serde::Deserialize;
 use thiserror::Error;
+use toml_edit::{DocumentMut, Item, Table, value};
 
 pub const CONFIG_VERSION: u32 = 1;
 pub const CONFIG_PATH_ENV: &str = "SPOTIFY_TUI_CONFIG";
@@ -119,24 +120,24 @@ impl Config {
                 });
             }
         };
-        if !contents.is_empty() {
-            let config = Self::parse(&contents, Some(path.to_owned()))?;
-            if config.spotify_api().is_some() {
-                return Ok(path.to_owned());
-            }
-        }
-
-        let mut updated = if contents.trim().is_empty() {
-            format!("version = {CONFIG_VERSION}\n")
+        let mut document = if contents.trim().is_empty() {
+            let mut document = DocumentMut::new();
+            document["version"] = value(i64::from(CONFIG_VERSION));
+            document
         } else {
+            Self::parse(&contents, Some(path.to_owned()))?;
             contents
+                .parse::<DocumentMut>()
+                .map_err(|source| ConfigError::EditToml {
+                    path: path.to_owned(),
+                    source,
+                })?
         };
-        if !updated.ends_with('\n') {
-            updated.push('\n');
+        if !document.contains_key("spotify_api") {
+            document["spotify_api"] = Item::Table(Table::new());
         }
-        updated.push_str("\n[spotify_api]\nclient_id = ");
-        updated.push_str(&toml::Value::String(client_id.to_owned()).to_string());
-        updated.push('\n');
+        document["spotify_api"]["client_id"] = value(client_id);
+        let updated = document.to_string();
 
         Self::parse(&updated, Some(path.to_owned()))?;
         if let Some(parent) = path.parent() {
@@ -301,6 +302,12 @@ pub enum ConfigError {
         path: PathBuf,
         #[source]
         source: io::Error,
+    },
+    #[error("could not edit config file {path}: {source}")]
+    EditToml {
+        path: PathBuf,
+        #[source]
+        source: toml_edit::TomlError,
     },
     #[error("could not parse {location}: {source}")]
     Toml {
@@ -730,6 +737,43 @@ accent = "#123456"
         assert_eq!(config.theme().accent(), Color::Rgb(0x12, 0x34, 0x56));
         assert!(contents.contains("# Keep this comment."));
         assert!(contents.contains("client_id = \"client-id\""));
+    }
+
+    #[test]
+    fn onboarding_replaces_a_rejected_client_id_without_losing_api_options() {
+        let unique = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+        let directory = env::temp_dir().join(format!(
+            "spotify-tui-corrected-client-id-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("config.toml");
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        fs::write(
+            &path,
+            r#"version = 1
+
+[spotify_api]
+# Keep the custom API settings while correcting the ID.
+client_id = "mistyped"
+redirect_uri = "http://127.0.0.1:9876/return"
+token_cache = "token.json"
+"#,
+        )
+        .expect("fixture should be written");
+
+        Config::save_spotify_api_client_id_to(&path, "corrected")
+            .expect("onboarding should replace the client ID");
+        let config = Config::load_from(&path).expect("updated config should load");
+        let contents = fs::read_to_string(&path).expect("updated config should be readable");
+        let _ = fs::remove_dir_all(directory);
+        let spotify_api = config
+            .spotify_api()
+            .expect("Spotify API should remain configured");
+
+        assert_eq!(spotify_api.client_id(), "corrected");
+        assert_eq!(spotify_api.redirect_uri(), "http://127.0.0.1:9876/return");
+        assert_eq!(spotify_api.token_cache(), Some(Path::new("token.json")));
+        assert!(contents.contains("# Keep the custom API settings"));
     }
 
     #[test]

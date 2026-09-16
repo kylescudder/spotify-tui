@@ -23,6 +23,7 @@ sha2 = "0.10.9"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 toml = "1.1.5"
+toml_edit = "0.25.13"
 ureq = { version = "3.4.1", default-features = false, features = ["json", "rustls"] }
 url = "2.5.7"
 

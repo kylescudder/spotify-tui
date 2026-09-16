@@ -143,22 +143,37 @@ fn prepare_config() -> Result<Option<Config>, Box<dyn Error>> {
     let config_path = Config::config_path()?;
     let mut configuration_error = None;
     let mut authentication_error = None;
+    let mut editing_client_id = false;
 
     loop {
-        if config.spotify_api().is_none() {
-            let mut state = OnboardingState::configure(config_path.clone());
+        if config.spotify_api().is_none() || editing_client_id {
+            let mut state = config.spotify_api().map_or_else(
+                || OnboardingState::configure(config_path.clone()),
+                |spotify_api| {
+                    OnboardingState::edit_client_id(
+                        config_path.clone(),
+                        spotify_api.client_id().to_owned(),
+                    )
+                },
+            );
             if let Some(error) = configuration_error.take() {
                 state.set_error(error);
             }
             match run_onboarding_session(state, config.theme())? {
                 OnboardingAction::SaveClientId(client_id) => {
                     match Config::save_spotify_api_client_id(&client_id) {
-                        Ok(_) => config = Config::load()?,
+                        Ok(_) => {
+                            config = Config::load()?;
+                            editing_client_id = false;
+                            authentication_error = None;
+                        }
                         Err(error) => configuration_error = Some(error.to_string()),
                     }
                 }
                 OnboardingAction::Quit => return Ok(None),
-                OnboardingAction::None | OnboardingAction::Authenticate => {}
+                OnboardingAction::None
+                | OnboardingAction::Authenticate
+                | OnboardingAction::EditClientId => {}
             }
             continue;
         }
@@ -170,7 +185,11 @@ fn prepare_config() -> Result<Option<Config>, Box<dyn Error>> {
             return Ok(Some(config));
         }
 
-        let state = OnboardingState::authorize(config_path.clone(), authentication_error.take());
+        let state = OnboardingState::authorize(
+            config_path.clone(),
+            spotify_api.client_id().to_owned(),
+            authentication_error.take(),
+        );
         match run_onboarding_session(state, config.theme())? {
             OnboardingAction::Authenticate => {
                 println!("Opening Spotify authorization in your browser…");
@@ -181,6 +200,7 @@ fn prepare_config() -> Result<Option<Config>, Box<dyn Error>> {
                     Err(error) => authentication_error = Some(error.to_string()),
                 }
             }
+            OnboardingAction::EditClientId => editing_client_id = true,
             OnboardingAction::Quit => return Ok(None),
             OnboardingAction::None | OnboardingAction::SaveClientId(_) => {}
         }

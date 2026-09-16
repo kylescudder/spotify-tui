@@ -15,6 +15,7 @@ pub enum OnboardingAction {
     None,
     SaveClientId(String),
     Authenticate,
+    EditClientId,
     Quit,
 }
 
@@ -28,18 +29,22 @@ pub struct OnboardingState {
 
 impl OnboardingState {
     pub fn configure(config_path: PathBuf) -> Self {
+        Self::edit_client_id(config_path, String::new())
+    }
+
+    pub fn edit_client_id(config_path: PathBuf, client_id: String) -> Self {
         Self {
             stage: OnboardingStage::Configure,
-            client_id: String::new(),
+            client_id,
             config_path,
             error: None,
         }
     }
 
-    pub fn authorize(config_path: PathBuf, error: Option<String>) -> Self {
+    pub fn authorize(config_path: PathBuf, client_id: String, error: Option<String>) -> Self {
         Self {
             stage: OnboardingStage::Authorize,
-            client_id: String::new(),
+            client_id,
             config_path,
             error,
         }
@@ -111,6 +116,11 @@ impl OnboardingState {
                 self.error = None;
                 OnboardingAction::None
             }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.client_id.clear();
+                self.error = None;
+                OnboardingAction::None
+            }
             KeyCode::Char(character)
                 if !key
                     .modifiers
@@ -128,6 +138,7 @@ impl OnboardingState {
     fn handle_authorize_key(&self, key: KeyEvent) -> OnboardingAction {
         match key.code {
             KeyCode::Enter => OnboardingAction::Authenticate,
+            KeyCode::Char('e') => OnboardingAction::EditClientId,
             KeyCode::Esc | KeyCode::Char('q') => OnboardingAction::Quit,
             _ => OnboardingAction::None,
         }
@@ -171,12 +182,28 @@ mod tests {
 
     #[test]
     fn authorization_requires_an_explicit_confirmation() {
-        let mut state = OnboardingState::authorize(PathBuf::from("config.toml"), None);
+        let mut state =
+            OnboardingState::authorize(PathBuf::from("config.toml"), "client-id".to_owned(), None);
 
         assert_eq!(
             state.handle_key(key(KeyCode::Enter)),
             OnboardingAction::Authenticate
         );
         assert_eq!(state.handle_key(key(KeyCode::Esc)), OnboardingAction::Quit);
+        assert_eq!(
+            state.handle_key(key(KeyCode::Char('e'))),
+            OnboardingAction::EditClientId
+        );
+    }
+
+    #[test]
+    fn correcting_a_client_id_can_clear_the_existing_value() {
+        let mut state =
+            OnboardingState::edit_client_id(PathBuf::from("config.toml"), "mistyped".to_owned());
+
+        state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        state.paste("corrected");
+
+        assert_eq!(state.client_id(), "corrected");
     }
 }

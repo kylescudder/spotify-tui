@@ -327,7 +327,8 @@ user from reaching search with no configured client or token. On first launch,
 the two-step setup screen requires a client ID, writes the required
 `[spotify_api]` configuration without replacing existing playback or theme
 settings, and then opens Spotify's browser approval flow. The player opens only
-after the resulting token has been saved locally.
+after the resulting token has been saved locally. If Spotify rejects a mistyped
+client ID, press `e` on the authorization screen to correct it in place.
 
 After setup, press `/`, type a query, and press `Enter`. Results include
 artists, albums, tracks, and playlists. This is also the phone-free way to
