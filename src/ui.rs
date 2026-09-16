@@ -12,7 +12,351 @@ use crate::{
     browser::BrowserView,
     catalog::CatalogItemKind,
     config::Theme,
+    onboarding::{OnboardingStage, OnboardingState},
 };
+
+pub fn render_onboarding(frame: &mut Frame, state: &OnboardingState, theme: &Theme) {
+    let area = frame.area();
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .style(
+            Style::default()
+                .bg(theme.background())
+                .fg(theme.foreground()),
+        )
+        .border_style(Style::default().fg(theme.border()))
+        .title(
+            Line::from(" Spotify TUI · setup ").style(
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width < 52 || inner.height < 18 {
+        render_compact_onboarding(frame, inner, state, theme);
+        return;
+    }
+
+    let panel_width = inner.width.min(76);
+    let panel = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(panel_width),
+            Constraint::Fill(1),
+        ])
+        .split(inner)[1];
+    match state.stage() {
+        OnboardingStage::Configure => render_configure_onboarding(frame, panel, state, theme),
+        OnboardingStage::Authorize => render_authorize_onboarding(frame, panel, state, theme),
+    }
+}
+
+fn render_configure_onboarding(
+    frame: &mut Frame,
+    area: Rect,
+    state: &OnboardingState,
+    theme: &Theme,
+) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .margin(1)
+        .split(area);
+
+    frame.render_widget(
+        Paragraph::new("SETUP  1 / 2").style(
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Connect Spotify search")
+            .style(
+                Style::default()
+                    .fg(theme.foreground())
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center),
+        rows[2],
+    );
+    frame.render_widget(
+        Paragraph::new("Spotify requires a personal developer app for catalogue access.")
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center),
+        rows[3],
+    );
+    render_setup_instruction(
+        frame,
+        rows[5],
+        "01",
+        "Create an app at developer.spotify.com/dashboard",
+        theme,
+    );
+    render_setup_instruction(
+        frame,
+        rows[6],
+        "02",
+        &format!("Add Redirect URI  {}", state.redirect_uri()),
+        theme,
+    );
+
+    let input = format!("> {}█", state.client_id());
+    frame.render_widget(
+        Paragraph::new(input)
+            .style(Style::default().fg(theme.foreground()))
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.accent()))
+                    .title(" 03  Paste client ID "),
+            ),
+        rows[7],
+    );
+    frame.render_widget(
+        Paragraph::new(format!("Saves to {}", state.config_path().display()))
+            .style(Style::default().fg(theme.muted()))
+            .wrap(Wrap { trim: true }),
+        rows[8],
+    );
+    frame.render_widget(
+        Paragraph::new(
+            state
+                .error()
+                .unwrap_or("No client secret is requested or stored."),
+        )
+        .style(Style::default().fg(if state.error().is_some() {
+            theme.error()
+        } else {
+            theme.muted()
+        }))
+        .wrap(Wrap { trim: true }),
+        rows[9],
+    );
+    frame.render_widget(
+        Paragraph::new("Enter save & continue  ·  Ctrl-U clear  ·  Esc quit")
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center),
+        rows[11],
+    );
+}
+
+fn render_authorize_onboarding(
+    frame: &mut Frame,
+    area: Rect,
+    state: &OnboardingState,
+    theme: &Theme,
+) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(5),
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+        ])
+        .margin(1)
+        .split(area);
+
+    frame.render_widget(
+        Paragraph::new("SETUP  2 / 2").style(
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Authorize your account")
+            .style(
+                Style::default()
+                    .fg(theme.foreground())
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center),
+        rows[2],
+    );
+    frame.render_widget(
+        Paragraph::new("A browser will ask Spotify for playback permission.")
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center),
+        rows[3],
+    );
+    let checklist = Text::from(vec![
+        Line::from(vec![
+            Span::styled("  ✓  ", Style::default().fg(theme.accent())),
+            Span::styled("Client ID saved", Style::default().fg(theme.foreground())),
+        ]),
+        Line::from(vec![
+            Span::styled("  →  ", Style::default().fg(theme.warning())),
+            Span::styled(
+                "Approve in Spotify",
+                Style::default().fg(theme.foreground()),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  ○  ", Style::default().fg(theme.muted())),
+            Span::styled("Token saved locally", Style::default().fg(theme.muted())),
+        ]),
+    ]);
+    frame.render_widget(
+        Paragraph::new(checklist)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        rows[5],
+    );
+    frame.render_widget(
+        Paragraph::new(
+            state
+                .error()
+                .unwrap_or("The token stays on this device and refreshes automatically."),
+        )
+        .style(Style::default().fg(if state.error().is_some() {
+            theme.error()
+        } else {
+            theme.muted()
+        }))
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true }),
+        rows[6],
+    );
+    frame.render_widget(
+        Paragraph::new("Enter  Open Spotify")
+            .style(
+                Style::default()
+                    .fg(theme.background())
+                    .bg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center)
+            .block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.accent())),
+            ),
+        rows[7],
+    );
+    frame.render_widget(
+        Paragraph::new(format!("Config  {}", state.config_path().display()))
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        rows[8],
+    );
+    frame.render_widget(
+        Paragraph::new("Enter continue  ·  e edit client ID  ·  q quit")
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center),
+        rows[10],
+    );
+}
+
+fn render_setup_instruction(
+    frame: &mut Frame,
+    area: Rect,
+    number: &str,
+    instruction: &str,
+    theme: &Theme,
+) {
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {number}  "),
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                instruction.to_owned(),
+                Style::default().fg(theme.foreground()),
+            ),
+        ]))
+        .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_compact_onboarding(
+    frame: &mut Frame,
+    area: Rect,
+    state: &OnboardingState,
+    theme: &Theme,
+) {
+    let text = match state.stage() {
+        OnboardingStage::Configure => Text::from(vec![
+            Line::from("SETUP 1 / 2").style(
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from("Create a Spotify developer app, then add:")
+                .style(Style::default().fg(theme.foreground())),
+            Line::from(state.redirect_uri()).style(Style::default().fg(theme.warning())),
+            Line::from(format!("Client ID > {}█", state.client_id()))
+                .style(Style::default().fg(theme.foreground())),
+            Line::from(
+                state
+                    .error()
+                    .unwrap_or("Enter continue · Ctrl-U clear · Esc quit"),
+            )
+            .style(Style::default().fg(if state.error().is_some() {
+                theme.error()
+            } else {
+                theme.muted()
+            })),
+        ]),
+        OnboardingStage::Authorize => Text::from(vec![
+            Line::from("SETUP 2 / 2").style(
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::from("Client ID saved. Authorize Spotify to create the local token.")
+                .style(Style::default().fg(theme.foreground())),
+            Line::from(
+                state
+                    .error()
+                    .unwrap_or("Enter open Spotify · e edit client ID · q quit"),
+            )
+            .style(Style::default().fg(if state.error().is_some() {
+                theme.error()
+            } else {
+                theme.muted()
+            })),
+        ]),
+    };
+    frame.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
+}
 
 pub fn render(
     frame: &mut Frame,
@@ -668,6 +1012,70 @@ background = "#010203"
         assert_eq!(top_left.fg, Color::Rgb(0x10, 0x20, 0x30));
         assert_eq!(title.fg, Color::Rgb(0x40, 0x50, 0x60));
         assert_eq!(body.bg, Color::Rgb(0x01, 0x02, 0x03));
+    }
+
+    #[test]
+    fn configuration_onboarding_explains_every_required_value() {
+        let config = Config::default();
+        let redirect_uri = "http://127.0.0.1:9876/return";
+        let mut state = OnboardingState::edit_client_id(
+            std::path::PathBuf::from("/tmp/spotify-tui/config.toml"),
+            String::new(),
+            redirect_uri.to_owned(),
+        );
+        for character in "client-id".chars() {
+            state.handle_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(character),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        let mut terminal =
+            Terminal::new(TestBackend::new(84, 26)).expect("test backend is infallible");
+
+        terminal
+            .draw(|frame| render_onboarding(frame, &state, config.theme()))
+            .expect("test backend is infallible");
+
+        let text = rendered_text(&terminal);
+        for expected in [
+            "SETUP  1 / 2",
+            "developer.spotify.com/dashboard",
+            redirect_uri,
+            "client-id",
+            "/tmp/spotify-tui/config.toml",
+            "No client secret",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn authorization_onboarding_makes_the_local_token_requirement_clear() {
+        let config = Config::default();
+        let state = OnboardingState::authorize(
+            std::path::PathBuf::from("/tmp/spotify-tui/config.toml"),
+            "client-id".to_owned(),
+            "http://127.0.0.1:8989/callback".to_owned(),
+            None,
+        );
+        let mut terminal =
+            Terminal::new(TestBackend::new(84, 26)).expect("test backend is infallible");
+
+        terminal
+            .draw(|frame| render_onboarding(frame, &state, config.theme()))
+            .expect("test backend is infallible");
+
+        let text = rendered_text(&terminal);
+        for expected in [
+            "SETUP  2 / 2",
+            "Client ID saved",
+            "Approve in Spotify",
+            "Token saved locally",
+            "Open Spotify",
+            "e edit client ID",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+        }
     }
 
     #[test]

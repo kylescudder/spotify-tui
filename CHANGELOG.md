@@ -35,11 +35,10 @@ uses semantic versioning once public releases begin.
   bounded responsive placement, vertically centred compact playback details,
   and placeholders that clear once artwork is ready.
 - TOML configuration with built-in and custom colour themes.
-- Optional Spotify Web API catalogue access using a user-supplied client ID,
-  browser-based PKCE authentication, an owner-only token cache, and automatic
-  refresh without a client secret.
-- Launch catalogue authentication lazily from the first search and resume the
-  pending request after browser approval without leaving or restarting the TUI.
+- Required two-step first-run setup for Spotify Web API catalogue access. The
+  TUI now collects and safely appends the client ID configuration, requires
+  browser-based PKCE authentication, verifies the owner-only token cache before
+  opening the player, and refreshes tokens without a client secret.
 - Keyboard-first search across artists, albums, tracks, and playlists, with
   artist release pages, album track pages, navigation history, asynchronous
   loading, and local Spotifyd playback for selected content.

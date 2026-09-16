@@ -7,13 +7,14 @@ use std::{
 use ratatui::style::Color;
 use serde::Deserialize;
 use thiserror::Error;
+use toml_edit::{DocumentMut, Item, Table, value};
 
 pub const CONFIG_VERSION: u32 = 1;
 pub const CONFIG_PATH_ENV: &str = "SPOTIFY_TUI_CONFIG";
 pub const BUILT_IN_THEME_NAMES: [&str; 3] = ["spotify", "midnight", "high-contrast"];
+pub const SPOTIFY_API_REDIRECT_URI: &str = "http://127.0.0.1:8989/callback";
 
 const DEFAULT_THEME_NAME: &str = "spotify";
-const DEFAULT_SPOTIFY_API_REDIRECT_URI: &str = "http://127.0.0.1:8989/callback";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -83,6 +84,73 @@ impl Config {
 
     pub fn source_path(&self) -> Option<&Path> {
         self.source_path.as_deref()
+    }
+
+    pub fn config_path() -> Result<PathBuf, ConfigError> {
+        if let Some(path) = env::var_os(CONFIG_PATH_ENV) {
+            if path.is_empty() {
+                return Err(ConfigError::EmptyPathOverride);
+            }
+            return Ok(PathBuf::from(path));
+        }
+
+        default_config_path().ok_or(ConfigError::NoConfigDirectory)
+    }
+
+    pub fn save_spotify_api_client_id(client_id: &str) -> Result<PathBuf, ConfigError> {
+        Self::save_spotify_api_client_id_to(&Self::config_path()?, client_id)
+    }
+
+    fn save_spotify_api_client_id_to(path: &Path, client_id: &str) -> Result<PathBuf, ConfigError> {
+        let client_id = client_id.trim();
+        SpotifyApiDefinition {
+            client_id: client_id.to_owned(),
+            redirect_uri: default_spotify_api_redirect_uri(),
+            token_cache: None,
+        }
+        .resolve()?;
+
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(source) => {
+                return Err(ConfigError::Read {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        };
+        let mut document = if contents.trim().is_empty() {
+            let mut document = DocumentMut::new();
+            document["version"] = value(i64::from(CONFIG_VERSION));
+            document
+        } else {
+            Self::parse(&contents, Some(path.to_owned()))?;
+            contents
+                .parse::<DocumentMut>()
+                .map_err(|source| ConfigError::EditToml {
+                    path: path.to_owned(),
+                    source,
+                })?
+        };
+        if !document.contains_key("spotify_api") {
+            document["spotify_api"] = Item::Table(Table::new());
+        }
+        document["spotify_api"]["client_id"] = value(client_id);
+        let updated = document.to_string();
+
+        Self::parse(&updated, Some(path.to_owned()))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+                path: path.to_owned(),
+                source,
+            })?;
+        }
+        fs::write(path, updated).map_err(|source| ConfigError::Write {
+            path: path.to_owned(),
+            source,
+        })?;
+        Ok(path.to_owned())
     }
 
     fn load_optional_path(path: &Path) -> Result<Self, ConfigError> {
@@ -227,6 +295,20 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
+    #[error("could not determine a directory for config.toml")]
+    NoConfigDirectory,
+    #[error("could not write config file {path}: {source}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("could not edit config file {path}: {source}")]
+    EditToml {
+        path: PathBuf,
+        #[source]
+        source: toml_edit::TomlError,
+    },
     #[error("could not parse {location}: {source}")]
     Toml {
         location: String,
@@ -359,7 +441,7 @@ impl SpotifyApiDefinition {
 }
 
 fn default_spotify_api_redirect_uri() -> String {
-    DEFAULT_SPOTIFY_API_REDIRECT_URI.to_owned()
+    SPOTIFY_API_REDIRECT_URI.to_owned()
 }
 
 fn validate_startup_uri(value: Option<String>) -> Result<Option<String>, ConfigError> {
@@ -410,14 +492,27 @@ fn default_theme_name() -> String {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|path| !path.is_empty())
-                .map(|home| PathBuf::from(home).join(".config"))
-        })
+    default_config_path_from(
+        env::var_os("XDG_CONFIG_HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+        env::var_os("HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+        env::var_os("LOCALAPPDATA")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+    )
+}
+
+fn default_config_path_from(
+    xdg_config_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+) -> Option<PathBuf> {
+    xdg_config_home
+        .or_else(|| home.map(|home| home.join(".config")))
+        .or(local_app_data)
         .map(|root| root.join("spotify-tui").join("config.toml"))
 }
 
@@ -502,6 +597,16 @@ mod tests {
     }
 
     #[test]
+    fn native_windows_config_uses_local_app_data() {
+        let local_app_data = PathBuf::from(r"C:\Users\alice\AppData\Local");
+
+        assert_eq!(
+            default_config_path_from(None, None, Some(local_app_data.clone())),
+            Some(local_app_data.join("spotify-tui").join("config.toml"))
+        );
+    }
+
+    #[test]
     fn selects_a_built_in_theme() {
         let config = Config::from_toml(
             r#"
@@ -573,6 +678,102 @@ token_cache = "/tmp/spotify-tui-token.json"
             spotify_api.token_cache(),
             Some(Path::new("/tmp/spotify-tui-token.json"))
         );
+    }
+
+    #[test]
+    fn onboarding_creates_a_complete_config_with_the_client_id() {
+        let unique = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+        let directory = env::temp_dir().join(format!(
+            "spotify-tui-onboarding-config-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("config.toml");
+
+        Config::save_spotify_api_client_id_to(&path, "  client-id  ")
+            .expect("onboarding should create config");
+        let config = Config::load_from(&path).expect("created config should load");
+        let contents = fs::read_to_string(&path).expect("created config should be readable");
+        let _ = fs::remove_dir_all(directory);
+
+        assert_eq!(
+            config
+                .spotify_api()
+                .expect("Spotify API should be configured")
+                .client_id(),
+            "client-id"
+        );
+        assert!(contents.contains("version = 1"));
+        assert!(contents.contains("[spotify_api]"));
+    }
+
+    #[test]
+    fn onboarding_preserves_existing_configuration_when_adding_spotify() {
+        let unique = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+        let directory = env::temp_dir().join(format!(
+            "spotify-tui-existing-config-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("config.toml");
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        fs::write(
+            &path,
+            r##"# Keep this comment.
+version = 1
+theme = "custom"
+
+[themes.custom]
+accent = "#123456"
+"##,
+        )
+        .expect("fixture should be written");
+
+        Config::save_spotify_api_client_id_to(&path, "client-id")
+            .expect("onboarding should extend config");
+        let config = Config::load_from(&path).expect("updated config should load");
+        let contents = fs::read_to_string(&path).expect("updated config should be readable");
+        let _ = fs::remove_dir_all(directory);
+
+        assert_eq!(config.theme_name(), "custom");
+        assert_eq!(config.theme().accent(), Color::Rgb(0x12, 0x34, 0x56));
+        assert!(contents.contains("# Keep this comment."));
+        assert!(contents.contains("client_id = \"client-id\""));
+    }
+
+    #[test]
+    fn onboarding_replaces_a_rejected_client_id_without_losing_api_options() {
+        let unique = NEXT_TEST_PATH.fetch_add(1, Ordering::Relaxed);
+        let directory = env::temp_dir().join(format!(
+            "spotify-tui-corrected-client-id-{}-{unique}",
+            std::process::id()
+        ));
+        let path = directory.join("config.toml");
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        fs::write(
+            &path,
+            r#"version = 1
+
+[spotify_api]
+# Keep the custom API settings while correcting the ID.
+client_id = "mistyped"
+redirect_uri = "http://127.0.0.1:9876/return"
+token_cache = "token.json"
+"#,
+        )
+        .expect("fixture should be written");
+
+        Config::save_spotify_api_client_id_to(&path, "corrected")
+            .expect("onboarding should replace the client ID");
+        let config = Config::load_from(&path).expect("updated config should load");
+        let contents = fs::read_to_string(&path).expect("updated config should be readable");
+        let _ = fs::remove_dir_all(directory);
+        let spotify_api = config
+            .spotify_api()
+            .expect("Spotify API should remain configured");
+
+        assert_eq!(spotify_api.client_id(), "corrected");
+        assert_eq!(spotify_api.redirect_uri(), "http://127.0.0.1:9876/return");
+        assert_eq!(spotify_api.token_cache(), Some(Path::new("token.json")));
+        assert!(contents.contains("# Keep the custom API settings"));
     }
 
     #[test]

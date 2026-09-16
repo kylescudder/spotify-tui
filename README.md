@@ -1,11 +1,10 @@
 # Spotify TUI
 
 A local-first terminal Spotify interface powered by `spotifyd`. Playback,
-controls, now-playing metadata, and artwork use a local player interface and
-work without Spotify Web API access. Optional catalogue access
-adds search, artist releases, album tracks, and play-from-search through the
-Spotify Web API. Version 1 targets a Nix flake on Linux and Homebrew on macOS,
-plus direct POSIX and Windows installers.
+controls, now-playing metadata, and artwork use a local player interface. Search,
+artist releases, album tracks, and play-from-search use a user-authorized
+Spotify Web API client. Version 1 targets a Nix flake on Linux and Homebrew on
+macOS, plus direct POSIX and Windows installers.
 
 The project is under active development. Linux playback uses Spotifyd's MPRIS
 interface. macOS and Windows use the authenticated, loopback-only local-control
@@ -258,8 +257,8 @@ device activation.
 
 Spotify TUI never collects a Spotify password. Playback authentication is
 delegated to the installed `spotifyd` binary, which stores and owns that
-credential. The separate, optional catalogue flow described below uses
-browser-based PKCE and stores only its own Web API tokens.
+credential. The separate catalogue flow described below uses browser-based
+PKCE and stores only its own Web API tokens.
 
 Authenticate once before the first normal launch:
 
@@ -321,13 +320,19 @@ loopback port, and an owner-local random token. Their adapters and packaging are
 implemented, but both still require live acceptance before those packages are
 called functionally complete.
 
-## Catalogue search
+## First launch and catalogue search
 
-Catalogue access is optional. Without it, the local now-playing screen and all
-playback controls continue to work. Once configured, press `/`, type a query,
-and press `Enter`. Results include artists, albums, tracks, and playlists.
-This is also the phone-free way to choose the first content in a Spotify session
-that has no resumable context.
+The TUI completes catalogue setup before opening the player. This prevents a
+user from reaching search with no configured client or token. On first launch,
+the two-step setup screen requires a client ID, writes the required
+`[spotify_api]` configuration without replacing existing playback or theme
+settings, and then opens Spotify's browser approval flow. The player opens only
+after the resulting token has been saved locally. If Spotify rejects a mistyped
+client ID, press `e` on the authorization screen to correct it in place.
+
+After setup, press `/`, type a query, and press `Enter`. Results include
+artists, albums, tracks, and playlists. This is also the phone-free way to
+choose the first content in a Spotify session that has no resumable context.
 
 - `j`/`k` or the arrow keys move through results.
 - `Enter` opens an artist or album, or starts a selected track or playlist.
@@ -351,37 +356,26 @@ ID. No client secret is used or stored.
 1. Create an app in the
    [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
 2. Add `http://127.0.0.1:8989/callback` as an exact redirect URI in that app.
-3. Put the app's client ID in `config.toml`:
-
-   ```toml
-   version = 1
-
-   [spotify_api]
-   client_id = "your-client-id"
-   ```
-
-   Merge this section into an existing config; do not replace its `[playback]`
-   or `[themes.*]` sections.
-
-4. Start the TUI, press `/`, enter a search, and press `Enter`:
+3. Start the TUI and paste the app's client ID into the setup screen:
 
    ```bash
    spotify-tui
    ```
 
-The first search automatically opens Spotify's browser approval page. The TUI
-keeps running while Authorization Code with PKCE completes over the loopback
-redirect, then continues the original search without another command or
-restart. Approval includes permission to control playback so catalogue track
-selection can target the active Spotifyd device. Tokens created by an older
-build prompt for this additional permission once on the next search. The TUI
-stores the resulting Web API access and refresh token at
+4. Press `Enter` to open Spotify, then approve access in the browser. Approval
+   includes permission to control playback so catalogue track selection can
+   target the active Spotifyd device.
+
+Authorization Code with PKCE completes over the loopback redirect. Tokens
+created by an older build prompt for the current permission once during the
+next startup. The TUI stores the resulting Web API access and refresh token at
 `$XDG_STATE_HOME/spotify-tui/spotify-api-token.json`, or
 `$HOME/.local/state/spotify-tui/spotify-api-token.json` when
 `XDG_STATE_HOME` is unset. The cache is created with owner-only permissions on
 Unix. Tokens refresh automatically; a missing, corrupt, or expired
-authorization starts the browser flow again. `spotify-tui catalog-auth` remains
-available for scripts and troubleshooting but is not part of normal use.
+authorization returns to setup before the player starts. `spotify-tui
+catalog-auth` remains available for scripts and troubleshooting but is not part
+of normal use.
 
 Spotify Development Mode currently limits an app to five explicitly allowlisted
 users and requires the app owner to have Spotify Premium. Add every intended
@@ -390,8 +384,9 @@ account is not allowlisted; a `429` means the app quota has been exceeded.
 
 ## Configuration
 
-Configuration uses TOML and is optional. If no file is found, Spotify TUI starts
-with the built-in `spotify` colour scheme.
+Configuration uses TOML. On first launch, Spotify TUI creates the file with the
+required schema version and Spotify client ID. All other settings are optional,
+and the built-in `spotify` colour scheme remains the default.
 
 ### Config file location
 
@@ -400,8 +395,9 @@ The first applicable location wins:
 1. The path in `SPOTIFY_TUI_CONFIG`, when the environment variable is set.
 2. `$XDG_CONFIG_HOME/spotify-tui/config.toml`, when `XDG_CONFIG_HOME` is set.
 3. `$HOME/.config/spotify-tui/config.toml`.
-4. Built-in defaults when none of those paths can be resolved or the default
-   config file does not exist.
+4. `%LOCALAPPDATA%\spotify-tui\config.toml` on native Windows.
+5. The setup screen creates the applicable default path when the file does not
+   exist.
 
 An explicitly selected `SPOTIFY_TUI_CONFIG` file must exist. Unreadable files,
 unknown options, and invalid values produce an actionable error before the
@@ -453,8 +449,9 @@ Spotify's existing context.
 
 ### Spotify catalogue options
 
-Catalogue options live under `[spotify_api]`. Omitting the entire section keeps
-catalogue access disabled while preserving every local playback feature.
+Catalogue options live under `[spotify_api]`. The setup screen adds this section
+when it is missing and will not open the player until `client_id` and a usable
+local authorization token are present.
 
 | Option | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -475,8 +472,8 @@ token_cache = "/home/alice/.local/state/spotify-tui/catalog-token.json"
 
 The redirect URI in the config and Spotify dashboard must match exactly. After
 changing `client_id`, `redirect_uri`, or `token_cache`, run
-`spotify-tui catalog-auth` once or remove the old token cache; the next search
-will otherwise authenticate automatically when it finds no usable token.
+`spotify-tui catalog-auth` once or remove the old token cache; the next normal
+launch will require authorization before opening the player.
 
 ### Custom theme options
 

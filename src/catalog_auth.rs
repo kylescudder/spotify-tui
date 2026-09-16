@@ -23,7 +23,7 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPIRY_MARGIN: Duration = Duration::from_secs(30);
 const AUTHORIZATION_SCOPES: &str = "user-modify-playback-state";
-const AUTHORIZATION_VERSION: u32 = 1;
+const AUTHORIZATION_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredToken {
@@ -32,6 +32,8 @@ pub(crate) struct StoredToken {
     expires_at: u64,
     #[serde(default)]
     authorization_version: u32,
+    #[serde(default)]
+    client_id: String,
 }
 
 impl StoredToken {
@@ -59,6 +61,28 @@ pub fn authenticate(config: &SpotifyApiConfig) -> Result<PathBuf, CatalogAuthErr
         }
         Ok(())
     })
+}
+
+pub fn is_authenticated(config: &SpotifyApiConfig) -> Result<bool, CatalogAuthError> {
+    is_authenticated_with(config, |config, token| {
+        refresh_token(config, token, &spotify_agent())
+    })
+}
+
+fn is_authenticated_with(
+    config: &SpotifyApiConfig,
+    refresh: impl FnOnce(&SpotifyApiConfig, &StoredToken) -> Result<StoredToken, CatalogAuthError>,
+) -> Result<bool, CatalogAuthError> {
+    match load_token(config) {
+        Ok(token) if !token.needs_refresh() => Ok(true),
+        Ok(token) => match refresh(config, &token) {
+            Ok(_) => Ok(true),
+            Err(error) if error.requires_authentication() => Ok(false),
+            Err(error) => Err(error),
+        },
+        Err(error) if error.requires_authentication() => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn authenticate_from_tui(
@@ -116,7 +140,8 @@ pub(crate) fn load_token(config: &SpotifyApiConfig) -> Result<StoredToken, Catal
     })?;
     let token: StoredToken = serde_json::from_slice(&bytes)
         .map_err(|source| CatalogAuthError::ParseToken { path, source })?;
-    if token.authorization_version < AUTHORIZATION_VERSION {
+    if token.authorization_version < AUTHORIZATION_VERSION || token.client_id != config.client_id()
+    {
         return Err(CatalogAuthError::AuthorizationExpired);
     }
     Ok(token)
@@ -149,6 +174,7 @@ pub(crate) fn refresh_token(
             .unwrap_or_else(|| current.refresh_token.clone()),
         expires_at: unix_timestamp().saturating_add(response.expires_in),
         authorization_version: current.authorization_version,
+        client_id: config.client_id().to_owned(),
     };
     save_token(&token_cache_path(config)?, &token)?;
     Ok(token)
@@ -325,6 +351,7 @@ fn exchange_code(
         refresh_token,
         expires_at: unix_timestamp().saturating_add(response.expires_in),
         authorization_version: AUTHORIZATION_VERSION,
+        client_id: config.client_id().to_owned(),
     })
 }
 
@@ -525,6 +552,9 @@ impl CatalogAuthError {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use std::sync::atomic::AtomicU64;
+
+    static NEXT_TOKEN_PATH: AtomicU64 = AtomicU64::new(0);
 
     fn api_config() -> SpotifyApiConfig {
         Config::from_toml(
@@ -536,6 +566,24 @@ client_id = "client-id"
 redirect_uri = "http://127.0.0.1:8989/callback"
 "#,
         )
+        .expect("configuration should resolve")
+        .spotify_api()
+        .expect("Spotify API should be configured")
+        .clone()
+    }
+
+    fn api_config_with_cache(client_id: &str, token_cache: &Path) -> SpotifyApiConfig {
+        let token_cache = token_cache.to_string_lossy();
+        Config::from_toml(&format!(
+            r#"
+version = 1
+
+[spotify_api]
+client_id = {client_id:?}
+redirect_uri = "http://127.0.0.1:8989/callback"
+token_cache = {token_cache:?}
+"#,
+        ))
         .expect("configuration should resolve")
         .spotify_api()
         .expect("Spotify API should be configured")
@@ -634,6 +682,58 @@ redirect_uri = "http://127.0.0.1:8989/callback"
         );
     }
 
+    #[test]
+    fn cached_authorization_is_bound_to_the_client_id() {
+        let unique = NEXT_TOKEN_PATH.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "spotify-tui-client-bound-token-{}-{unique}.json",
+            std::process::id()
+        ));
+        let original = api_config_with_cache("original-client", &path);
+        let replacement = api_config_with_cache("replacement-client", &path);
+        let token = StoredToken {
+            access_token: "access".to_owned(),
+            refresh_token: "refresh".to_owned(),
+            expires_at: u64::MAX,
+            authorization_version: AUTHORIZATION_VERSION,
+            client_id: original.client_id().to_owned(),
+        };
+
+        save_token(&path, &token).expect("token cache should be written");
+        assert!(load_token(&original).is_ok());
+        assert!(matches!(
+            load_token(&replacement),
+            Err(CatalogAuthError::AuthorizationExpired)
+        ));
+        assert!(!is_authenticated(&replacement).expect("mismatch should require authentication"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expiring_cached_authorization_is_validated_before_startup() {
+        let unique = NEXT_TOKEN_PATH.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "spotify-tui-expiring-token-{}-{unique}.json",
+            std::process::id()
+        ));
+        let config = api_config_with_cache("client-id", &path);
+        let token = StoredToken {
+            access_token: "access".to_owned(),
+            refresh_token: "revoked".to_owned(),
+            expires_at: 0,
+            authorization_version: AUTHORIZATION_VERSION,
+            client_id: config.client_id().to_owned(),
+        };
+
+        save_token(&path, &token).expect("token cache should be written");
+        let authenticated =
+            is_authenticated_with(&config, |_, _| Err(CatalogAuthError::AuthorizationExpired))
+                .expect("revoked refresh token should return to onboarding");
+        let _ = fs::remove_file(path);
+
+        assert!(!authenticated);
+    }
+
     #[cfg(unix)]
     #[test]
     fn token_cache_permissions_are_owner_only() {
@@ -648,6 +748,7 @@ redirect_uri = "http://127.0.0.1:8989/callback"
             refresh_token: "refresh".to_owned(),
             expires_at: 1,
             authorization_version: AUTHORIZATION_VERSION,
+            client_id: "client-id".to_owned(),
         };
 
         save_token(&path, &token).expect("token cache should be written");
