@@ -18,7 +18,7 @@ use spotify_tui::{
     app::{AppEvent, AppState, ArtworkState, Command},
     artwork::{ArtworkEvent, ArtworkRenderer, ArtworkRuntime, ArtworkTarget},
     auth::{self, AuthOutcome},
-    browser::{BrowserEffect, BrowserMode},
+    browser::{BrowserCommand, BrowserEffect, BrowserMode},
     catalog::{CatalogEvent, CatalogRuntime},
     catalog_auth,
     cli::{self, LaunchMode},
@@ -243,21 +243,34 @@ fn start_terminal() -> io::Result<Tui> {
 
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
-        disable_raw_mode()?;
+        let _ = disable_raw_mode();
+        let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
         return Err(error);
     }
 
-    Terminal::new(CrosstermBackend::new(stdout))
+    match Terminal::new(CrosstermBackend::new(stdout)) {
+        Ok(terminal) => Ok(terminal),
+        Err(error) => {
+            let _ = disable_raw_mode();
+            let mut stdout = io::stdout();
+            let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+            Err(error)
+        }
+    }
 }
 
 fn restore_terminal(terminal: &mut Tui) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(
+    let raw_mode_result = disable_raw_mode();
+    let screen_result = execute!(
         terminal.backend_mut(),
         DisableBracketedPaste,
         LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()
+    );
+    let cursor_result = terminal.show_cursor();
+
+    raw_mode_result?;
+    screen_result?;
+    cursor_result
 }
 
 fn run_onboarding_session(
@@ -265,19 +278,7 @@ fn run_onboarding_session(
     theme: &Theme,
 ) -> io::Result<OnboardingAction> {
     let mut terminal = start_terminal()?;
-    let result = loop {
-        terminal.draw(|frame| ui::render_onboarding(frame, &state, theme))?;
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                let action = state.handle_key(key);
-                if action != OnboardingAction::None {
-                    break Ok(action);
-                }
-            }
-            Event::Paste(text) => state.paste(&text),
-            _ => {}
-        }
-    };
+    let result = drive_onboarding_session(&mut terminal, &mut state, theme);
     let restore_result = restore_terminal(&mut terminal);
 
     match result {
@@ -288,6 +289,26 @@ fn run_onboarding_session(
         Err(error) => {
             let _ = restore_result;
             Err(error)
+        }
+    }
+}
+
+fn drive_onboarding_session(
+    terminal: &mut Tui,
+    state: &mut OnboardingState,
+    theme: &Theme,
+) -> io::Result<OnboardingAction> {
+    loop {
+        terminal.draw(|frame| ui::render_onboarding(frame, state, theme))?;
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                let action = state.handle_key(key);
+                if action != OnboardingAction::None {
+                    return Ok(action);
+                }
+            }
+            Event::Paste(text) => state.paste(&text),
+            _ => {}
         }
     }
 }
@@ -317,80 +338,90 @@ fn run(
         }
         terminal.draw(|frame| ui::render(frame, app, theme, artwork_renderer))?;
 
-        if event::poll(input_poll_interval(app, artwork_renderer))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            let browser_mode = app.browser().mode();
-            if let Some(command) = input::browser_command_for_key(key, browser_mode) {
-                match app.browser_mut().apply(command) {
-                    BrowserEffect::None => {}
-                    BrowserEffect::Quit => {
-                        app.reduce(AppEvent::QuitRequested);
-                        return Ok(SessionOutcome::Quit);
-                    }
-                    BrowserEffect::Play(uri) => {
-                        dispatch(app, services.playback, PlaybackCommand::OpenUri(uri));
-                    }
-                    BrowserEffect::PlayTrack(target) => {
-                        if let Err(error) = services.catalog.play(target) {
-                            app.reduce(AppEvent::PlaybackFailed(error.to_string()));
-                        }
-                    }
-                    BrowserEffect::Fetch {
-                        request_id,
-                        request,
-                    } => {
-                        if let Err(error) = services.catalog.fetch(request_id, request) {
-                            app.browser_mut().resolve(CatalogEvent::Failed {
-                                request_id,
-                                message: error.to_string(),
-                            });
-                        }
-                    }
-                }
-                continue;
-            }
+        if !event::poll(input_poll_interval(app, artwork_renderer))? {
+            continue;
+        }
+        let input_event = event::read()?;
+        if let Event::Paste(text) = input_event {
+            app.browser_mut().apply(BrowserCommand::Paste(text));
+            continue;
+        }
+        let Event::Key(key) = input_event else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
 
-            if browser_mode != BrowserMode::Closed {
-                continue;
-            }
-
-            let Some(command) = input::command_for_key(key) else {
-                continue;
-            };
-            match command {
-                Command::Quit => {
+        let browser_mode = app.browser().mode();
+        if let Some(command) = input::browser_command_for_key(key, browser_mode) {
+            match app.browser_mut().apply(command) {
+                BrowserEffect::None => {}
+                BrowserEffect::Quit => {
                     app.reduce(AppEvent::QuitRequested);
                     return Ok(SessionOutcome::Quit);
                 }
-                Command::Authenticate => return Ok(SessionOutcome::Authenticate),
-                Command::RetryConnection => reconnect(app, services),
-                Command::TogglePlayback => {
-                    dispatch(app, services.playback, PlaybackCommand::Toggle);
+                BrowserEffect::Play(uri) => {
+                    dispatch(app, services.playback, PlaybackCommand::OpenUri(uri));
                 }
-                Command::PreviousTrack => {
-                    dispatch(app, services.playback, PlaybackCommand::Previous);
-                }
-                Command::NextTrack => {
-                    dispatch(app, services.playback, PlaybackCommand::Next);
-                }
-                Command::Seek { direction, amount } => {
-                    let amount = i64::try_from(amount.as_micros()).unwrap_or(i64::MAX);
-                    let offset = match direction {
-                        spotify_tui::app::SeekDirection::Backward => -amount,
-                        spotify_tui::app::SeekDirection::Forward => amount,
-                    };
-                    dispatch(app, services.playback, PlaybackCommand::SeekBy(offset));
-                }
-                Command::AdjustVolume(amount) => {
-                    if let Some(current) = app.playback().map(|state| state.volume()) {
-                        dispatch(
-                            app,
-                            services.playback,
-                            PlaybackCommand::SetVolume((current + amount).clamp(0.0, 1.0)),
-                        );
+                BrowserEffect::PlayTrack(target) => {
+                    if let Err(error) = services.catalog.play(target) {
+                        app.reduce(AppEvent::PlaybackFailed(error.to_string()));
                     }
+                }
+                BrowserEffect::Fetch {
+                    request_id,
+                    request,
+                } => {
+                    if let Err(error) = services.catalog.fetch(request_id, request) {
+                        app.browser_mut().resolve(CatalogEvent::Failed {
+                            request_id,
+                            message: error.to_string(),
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+
+        if browser_mode != BrowserMode::Closed {
+            continue;
+        }
+
+        let Some(command) = input::command_for_key(key) else {
+            continue;
+        };
+        match command {
+            Command::Quit => {
+                app.reduce(AppEvent::QuitRequested);
+                return Ok(SessionOutcome::Quit);
+            }
+            Command::Authenticate => return Ok(SessionOutcome::Authenticate),
+            Command::RetryConnection => reconnect(app, services),
+            Command::TogglePlayback => {
+                dispatch(app, services.playback, PlaybackCommand::Toggle);
+            }
+            Command::PreviousTrack => {
+                dispatch(app, services.playback, PlaybackCommand::Previous);
+            }
+            Command::NextTrack => {
+                dispatch(app, services.playback, PlaybackCommand::Next);
+            }
+            Command::Seek { direction, amount } => {
+                let amount = i64::try_from(amount.as_micros()).unwrap_or(i64::MAX);
+                let offset = match direction {
+                    spotify_tui::app::SeekDirection::Backward => -amount,
+                    spotify_tui::app::SeekDirection::Forward => amount,
+                };
+                dispatch(app, services.playback, PlaybackCommand::SeekBy(offset));
+            }
+            Command::AdjustVolume(amount) => {
+                if let Some(current) = app.playback().map(|state| state.volume()) {
+                    dispatch(
+                        app,
+                        services.playback,
+                        PlaybackCommand::SetVolume((current + amount).clamp(0.0, 1.0)),
+                    );
                 }
             }
         }

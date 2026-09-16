@@ -485,14 +485,27 @@ fn default_theme_name() -> String {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os("HOME")
-                .filter(|path| !path.is_empty())
-                .map(|home| PathBuf::from(home).join(".config"))
-        })
+    default_config_path_from(
+        env::var_os("XDG_CONFIG_HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+        env::var_os("HOME")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+        env::var_os("LOCALAPPDATA")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from),
+    )
+}
+
+fn default_config_path_from(
+    xdg_config_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
+) -> Option<PathBuf> {
+    xdg_config_home
+        .or_else(|| home.map(|home| home.join(".config")))
+        .or(local_app_data)
         .map(|root| root.join("spotify-tui").join("config.toml"))
 }
 
@@ -574,6 +587,16 @@ mod tests {
 
         let config = Config::load_optional_path(&path).expect("missing config should be allowed");
         assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn native_windows_config_uses_local_app_data() {
+        let local_app_data = PathBuf::from(r"C:\Users\alice\AppData\Local");
+
+        assert_eq!(
+            default_config_path_from(None, None, Some(local_app_data.clone())),
+            Some(local_app_data.join("spotify-tui").join("config.toml"))
+        );
     }
 
     #[test]

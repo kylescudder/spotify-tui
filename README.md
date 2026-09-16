@@ -394,7 +394,9 @@ The first applicable location wins:
 1. The path in `SPOTIFY_TUI_CONFIG`, when the environment variable is set.
 2. `$XDG_CONFIG_HOME/spotify-tui/config.toml`, when `XDG_CONFIG_HOME` is set.
 3. `$HOME/.config/spotify-tui/config.toml`.
-4. The setup screen creates the default path when the file does not exist.
+4. `%LOCALAPPDATA%\spotify-tui\config.toml` on native Windows.
+5. The setup screen creates the applicable default path when the file does not
+   exist.
 
 An explicitly selected `SPOTIFY_TUI_CONFIG` file must exist. Unreadable files,
 unknown options, and invalid values produce an actionable error before the

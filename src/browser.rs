@@ -12,6 +12,7 @@ pub enum BrowserMode {
 pub enum BrowserCommand {
     OpenSearch,
     Insert(char),
+    Paste(String),
     Backspace,
     Submit,
     Previous,
@@ -113,6 +114,16 @@ impl BrowserState {
             BrowserCommand::Insert(character) => {
                 if let BrowserView::Editing { query } = &mut self.view {
                     query.push(character);
+                }
+                BrowserEffect::None
+            }
+            BrowserCommand::Paste(text) => {
+                if let BrowserView::Editing { query } = &mut self.view {
+                    query.extend(
+                        text.trim()
+                            .chars()
+                            .filter(|character| !character.is_control()),
+                    );
                 }
                 BrowserEffect::None
             }
@@ -340,6 +351,20 @@ mod tests {
             }
         );
         assert!(matches!(browser.view(), BrowserView::Loading { .. }));
+    }
+
+    #[test]
+    fn bracketed_paste_populates_the_search_editor() {
+        let mut browser = BrowserState::default();
+        browser.apply(BrowserCommand::OpenSearch);
+        browser.apply(BrowserCommand::Paste("enter shikari\n".to_owned()));
+
+        assert_eq!(
+            browser.view(),
+            &BrowserView::Editing {
+                query: "enter shikari".to_owned(),
+            }
+        );
     }
 
     #[test]
