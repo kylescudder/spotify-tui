@@ -64,8 +64,22 @@ pub fn authenticate(config: &SpotifyApiConfig) -> Result<PathBuf, CatalogAuthErr
 }
 
 pub fn is_authenticated(config: &SpotifyApiConfig) -> Result<bool, CatalogAuthError> {
+    is_authenticated_with(config, |config, token| {
+        refresh_token(config, token, &spotify_agent())
+    })
+}
+
+fn is_authenticated_with(
+    config: &SpotifyApiConfig,
+    refresh: impl FnOnce(&SpotifyApiConfig, &StoredToken) -> Result<StoredToken, CatalogAuthError>,
+) -> Result<bool, CatalogAuthError> {
     match load_token(config) {
-        Ok(_) => Ok(true),
+        Ok(token) if !token.needs_refresh() => Ok(true),
+        Ok(token) => match refresh(config, &token) {
+            Ok(_) => Ok(true),
+            Err(error) if error.requires_authentication() => Ok(false),
+            Err(error) => Err(error),
+        },
         Err(error) if error.requires_authentication() => Ok(false),
         Err(error) => Err(error),
     }
@@ -693,6 +707,31 @@ token_cache = {token_cache:?}
         ));
         assert!(!is_authenticated(&replacement).expect("mismatch should require authentication"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn expiring_cached_authorization_is_validated_before_startup() {
+        let unique = NEXT_TOKEN_PATH.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "spotify-tui-expiring-token-{}-{unique}.json",
+            std::process::id()
+        ));
+        let config = api_config_with_cache("client-id", &path);
+        let token = StoredToken {
+            access_token: "access".to_owned(),
+            refresh_token: "revoked".to_owned(),
+            expires_at: 0,
+            authorization_version: AUTHORIZATION_VERSION,
+            client_id: config.client_id().to_owned(),
+        };
+
+        save_token(&path, &token).expect("token cache should be written");
+        let authenticated =
+            is_authenticated_with(&config, |_, _| Err(CatalogAuthError::AuthorizationExpired))
+                .expect("revoked refresh token should return to onboarding");
+        let _ = fs::remove_file(path);
+
+        assert!(!authenticated);
     }
 
     #[cfg(unix)]
