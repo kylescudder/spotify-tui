@@ -5,6 +5,12 @@ uses semantic versioning once public releases begin.
 
 ## Unreleased
 
+## 0.1.0 - 2026-09-17
+
+- Initial public release for Linux x86_64/aarch64 and Apple Silicon macOS.
+  Intel macOS and Windows remain experimental source-only targets and are not
+  included in the published release assets.
+
 - Initial Ratatui application and deterministic playback state model.
 - Phone-free Linux startup through Spotifyd's local D-Bus transfer control,
   including automatic recovery after daemon restarts and an optional configured
@@ -60,8 +66,10 @@ uses semantic versioning once public releases begin.
   `403` permission and `429` quota responses.
 - Removed the planned audio spectrum from the product scope and dropped the
   unused `cava` dependency from Nix and Homebrew packaging.
-- Locked Nix flake, Homebrew formula automation, cross-platform release assets,
-  direct POSIX and PowerShell installers, checksums, and build provenance.
+- Locked Nix flake, Homebrew formula automation, supported-platform release
+  assets, the direct POSIX installer, checksums, and build provenance. The
+  PowerShell installer remains tested experimental groundwork and is not
+  published in `0.1.0`.
 - Bound public and per-platform release approvals to the exact Cargo package
   version so a version bump automatically invalidates stale readiness state.
 - Added a Balm-style, write-scoped Homebrew tap deploy key, an explicit

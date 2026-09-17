@@ -7,20 +7,20 @@
 A local-first terminal Spotify interface powered by `spotifyd`. Playback,
 controls, now-playing metadata, and artwork use a local player interface. Search,
 artist releases, album tracks, and play-from-search use a user-authorized
-Spotify Web API client. Version 1 targets a Nix flake on Linux and Homebrew on
-macOS, plus direct POSIX and Windows installers.
+Spotify Web API client. Version 1 targets a Nix flake and direct installer on
+Linux, plus Homebrew and a direct installer on Apple Silicon macOS.
 
 The project is under active development. Linux playback uses Spotifyd's MPRIS
-interface. macOS and Windows use the authenticated, loopback-only local-control
-adapter included in Spotify TUI's pinned Spotifyd build. Those packages must
-not be described as functionally complete until their live platform acceptance
-tests pass.
+interface. Apple Silicon macOS uses the authenticated, loopback-only
+local-control adapter included in Spotify TUI's pinned Spotifyd build. Intel
+macOS and Windows remain experimental source-only targets and are not included
+in the `0.1.0` release assets.
 
 ## Installation
 
 The canonical repository is `kylescudder/spotify-tui`. Installation URLs become
 live after the first tagged release. The release workflow stamps the actual
-repository into both direct installers, which also keeps forks functional.
+repository into the direct installer, which also keeps forks functional.
 
 ### Nix
 
@@ -66,7 +66,7 @@ with session MPRIS, so it also starts at login. Set
 Spotifyd service; Spotify TUI still verifies that daemon is running whenever it
 launches.
 
-### Homebrew on macOS
+### Homebrew on Apple Silicon macOS
 
 Spotify TUI is published through the existing
 [`kylescudder/tap`](https://github.com/kylescudder/homebrew-tap) tap:
@@ -75,9 +75,9 @@ Spotify TUI is published through the existing
 brew install kylescudder/tap/spotify-tui
 ```
 
-The formula builds and installs the compatible pinned Spotifyd runtime and
-defines a Homebrew service for it. On its first launch, Spotify TUI registers
-and starts that service through
+The formula is restricted to Apple Silicon. It builds and installs the
+compatible pinned Spotifyd runtime and defines a Homebrew service for it. On
+its first launch, Spotify TUI registers and starts that service through
 `brew services`; subsequent launches reuse it. The release workflow styles,
 audits, builds, installs, and tests the formula on macOS before updating the tap.
 
@@ -90,7 +90,7 @@ brew services stop spotifyd
 brew unlink spotifyd
 ```
 
-### Direct installer on Linux or macOS
+### Direct installer on Linux or Apple Silicon macOS
 
 ```bash
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
@@ -135,32 +135,12 @@ Useful installer controls are:
 The direct installer does not invoke or modify Homebrew, Nix, Apt, or another
 system package manager.
 
-### Direct installer on Windows
+### Experimental platforms
 
-From PowerShell:
-
-```powershell
-irm https://github.com/kylescudder/spotify-tui/releases/latest/download/install.ps1 | iex
-```
-
-The default destination is
-`%LOCALAPPDATA%\Programs\spotify-tui\bin`, which is added to the user PATH. The
-release archive contains Spotifyd built from the pinned upstream source with
-the portable Rodio backend and Spotify TUI local control. The installer keeps
-that compatible runtime upgraded, preserves existing configuration, adds a user
-Startup entry, and starts the daemon in the current session.
-The inspect-first, version-pinned form is:
-
-```powershell
-Invoke-WebRequest `
-  https://github.com/kylescudder/spotify-tui/releases/latest/download/install.ps1 `
-  -OutFile install-spotify-tui.ps1
-Get-Content .\install-spotify-tui.ps1
-.\install-spotify-tui.ps1 -Version 0.1.0 -NoModifyPath
-```
-
-PowerShell accepts `-ConfigDir`, `-NoDependencies`, `-ForceDependencies`,
-`-NoService`, and `-NoModifyPath` for the equivalent Windows controls.
+Spotify TUI does not publish Intel macOS or Windows packages in `0.1.0`.
+Platform adapters and installer groundwork remain in the source tree and CI so
+future support can be completed without presenting those targets as supported
+downloads today.
 
 ### Release verification
 
@@ -185,13 +165,6 @@ installer supplied it rather than preserving an existing installation:
 rm "$HOME/.local/bin/spotify-tui" "$HOME/.local/bin/spotify-tui-diagnose"
 rm "$HOME/.local/bin/spotifyd"
 ```
-
-On Windows, remove `spotify-tui.exe`, `spotify-tui-diagnose.exe`, and a
-direct-installer-owned `spotifyd.exe` from
-`%LOCALAPPDATA%\Programs\spotify-tui\bin`; remove the generated `spotifyd.cmd`
-from the user Startup directory and then remove the install directory from the
-user PATH if the installer added it. Configuration and OAuth credentials are
-deliberately retained during uninstall.
 
 ## Development
 
@@ -319,10 +292,9 @@ specific context on a fresh session, configure `playback.startup_uri` as
 described below.
 
 Spotifyd requires a Spotify Premium account. MPRIS and systemd integration are
-Linux-only; macOS and Windows use a per-user discovery file, an ephemeral
-loopback port, and an owner-local random token. Their adapters and packaging are
-implemented, but both still require live acceptance before those packages are
-called functionally complete.
+Linux-only. Apple Silicon macOS uses a per-user discovery file, an ephemeral
+loopback port, and an owner-local random token. The same transport exists in the
+experimental Windows port, but Windows is not a supported `0.1.0` package.
 
 ## First launch and catalogue search
 
@@ -348,8 +320,8 @@ follows the selected release, falling back to the artist image when a release
 has no cover. Opening a release shows its tracks. Selecting a track asks Spotify
 to start that exact URI on the active Spotifyd device, retaining its album as
 the playback context. This avoids an off-by-one bug in stock Spotifyd 0.4.2's
-MPRIS `OpenUri` implementation; the bundled macOS/Windows runtime selects the
-exact URI within that context instead of calculating a track-number offset.
+MPRIS `OpenUri` implementation; the bundled macOS runtime selects the exact URI
+within that context instead of calculating a track-number offset.
 Play/pause, previous/next, seeking, volume, and now-playing state remain on the
 platform's local playback connection.
 

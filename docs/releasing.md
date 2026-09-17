@@ -1,9 +1,11 @@
 # Release operations
 
 The repository treats packaging as a tested product surface. Pull requests run
-Rust checks on Linux, macOS, and Windows, validate the locked Nix flake, and test
-the POSIX and PowerShell installers. A semantic version tag assembles and tests
-every release path before publishing anything.
+Rust checks on Linux, macOS, and the experimental Windows port, validate the
+locked Nix flake, and test the installer implementations. The public `0.1.0`
+release supports Linux x86_64/aarch64 and Apple Silicon macOS. A semantic
+version tag assembles and tests every supported release path before publishing
+anything.
 
 ## One-time repository setup
 
@@ -43,12 +45,10 @@ The matrix produces:
 
 - `spotify-tui-x86_64-unknown-linux-musl.tar.gz`
 - `spotify-tui-aarch64-unknown-linux-musl.tar.gz`
-- `spotify-tui-x86_64-apple-darwin.tar.gz`
 - `spotify-tui-aarch64-apple-darwin.tar.gz`
-- `spotify-tui-x86_64-pc-windows-msvc.zip`
 - `spotify-tui-source.tar.gz`
 - `spotifyd-0.4.2-source.tar.gz`
-- `install.sh` and `install.ps1`
+- `install.sh`
 - `spotify-tui.rb`
 - `SHA256SUMS`
 
@@ -62,20 +62,20 @@ ALSA, PulseAudio, MPRIS, and Rustls enabled. That build runs inside a
 digest-pinned Rust 1.88/Debian Bullseye container, giving it a glibc 2.31
 baseline rather than inheriting Ubuntu 24.04's newer ABI. CI inspects both Linux
 runtimes and rejects OpenSSL 1.1 or glibc requirements beyond each published
-baseline before packaging. macOS and Windows apply the checked-in authenticated
-local-control patch and build it with the portable Rodio backend from the exact
-upstream commit; upstream does not currently publish a Windows binary. The
-matching complete Spotifyd source archive and applied patches are included in
-the same release and checked against a pinned SHA-256 value. Unlike the musl
+baseline before packaging. Apple Silicon macOS applies the checked-in
+authenticated local-control patch and builds it with the portable Rodio backend
+from the exact upstream commit. The matching complete Spotifyd source archive
+and applied patches are included in the same release and checked against a
+pinned SHA-256 value. Unlike the musl
 Spotify TUI binary, Linux Spotifyd remains dynamically linked to standard
 audio, D-Bus, and system libraries; the x86_64 build also uses OpenSSL 3.
 Release smoke tests install and exercise those runtime libraries explicitly.
 
-Release-time generation replaces `@REPOSITORY@` in the installer sources with
-the actual GitHub repository. The installers preserve existing configurations;
-Linux can preserve a compatible existing Spotifyd, while macOS and Windows keep
-the required patched runtime upgraded. They test user-level startup integration
-without requiring elevated privileges.
+Release-time generation replaces `@REPOSITORY@` in the POSIX installer source
+with the actual GitHub repository. The installer preserves existing
+configurations; Linux can preserve a compatible existing Spotifyd, while macOS
+keeps the required patched runtime upgraded. It tests user-level startup
+integration without requiring elevated privileges.
 
 ## Publish a release
 
@@ -85,9 +85,10 @@ without requiring elevated privileges.
    a successful manual release rehearsal, and record that exact package version
    for `public_release_version` and every entry under `[platforms]` in
    `release-readiness.toml`. For example, a fully accepted `0.1.0` release uses
-   `"0.1.0"` for all four values. Leave a value empty until that approval is
-   complete. Because approvals contain the package version instead of reusable
-   booleans, a later version bump automatically relocks every stale approval.
+   `"0.1.0"` for the public, Linux, and macOS values. Leave a value empty until
+   that approval is complete. Because approvals contain the package version
+   instead of reusable booleans, a later version bump automatically relocks
+   every stale approval.
 3. Run `make check`. If Nix is available, also run `nix flake check` and
    `nix build`.
 4. Merge the release commit to `main` and confirm CI is green.
@@ -98,9 +99,10 @@ without requiring elevated privileges.
    git push origin v0.1.0
    ```
 
-The tag workflow re-runs quality checks, performs native builds on all five
-targets, runs clean installer smoke tests on Linux, macOS, and Windows, builds
-and tests the Homebrew formula, validates Nix, and then:
+The tag workflow re-runs quality checks, performs native builds for Linux
+x86_64/aarch64 and Apple Silicon macOS, runs clean installer smoke tests on
+those platforms, builds and tests the Homebrew formula, validates Nix, and
+then:
 
 - creates GitHub provenance attestations for every release asset;
 - creates the GitHub release with generated notes;
@@ -111,20 +113,20 @@ Any architecture, installer, formula, or Nix failure blocks publication. The
 tap update is deliberately last so the formula can never advertise an archive
 that does not exist. Release runs are serialized, and the update refuses to
 downgrade an existing formula if an older tag is re-run. If the deploy-key push
-fails, the GitHub release remains usable through its direct installers while
+fails, the GitHub release remains usable through its direct installer while
 the previous Homebrew formula remains valid; fix the key or branch rule and
 retry the release workflow. A tag also fails before building unless every
 approval in `release-readiness.toml` matches the exact Cargo package version.
 
 ## Checksums and trust
 
-Both installers require HTTPS and reject an artifact unless its SHA-256 matches
-the release manifest. Release assembly also verifies downloaded upstream
-Spotifyd binaries and source before they enter the bundle. Checksums detect
-corruption and mismatched assets; they do not by themselves protect against a
-compromised release account. Users who need cryptographic provenance should
-download rather than pipe the installer and run `gh attestation verify` against
-the repository before execution.
+The published installer requires HTTPS and rejects an artifact unless its
+SHA-256 matches the release manifest. Release assembly also verifies downloaded
+upstream Spotifyd binaries and source before they enter the bundle. Checksums
+detect corruption and mismatched assets; they do not by themselves protect
+against a compromised release account. Users who need cryptographic provenance
+should download rather than pipe the installer and run `gh attestation verify`
+against the repository before execution.
 
 The scripts support local non-HTTPS paths only behind explicitly test-only
 switches. CI uses those switches to test success and checksum-rejection paths
@@ -141,11 +143,10 @@ tag cannot replace a newer formula.
 
 Do not merge or advertise the macOS formula as functionally complete until its
 local-control playback, service, and audio paths pass the product acceptance
-suite. The same rule applies to the Windows installer.
+suite.
 
 The clean-install rehearsal must also prove zero-command daemon startup: the
 Linux installer uses `systemctl --user enable --now`, the macOS installer
-bootstraps its LaunchAgent, the Homebrew formula service is registered by the
-first TUI launch, and the Windows installer creates its Startup entry and starts
-Spotifyd in the current session. No advertised path may require a user to run
+bootstraps its LaunchAgent, and the Homebrew formula service is registered by
+the first TUI launch. No advertised path may require a user to run
 `spotifyd --no-daemon` manually.

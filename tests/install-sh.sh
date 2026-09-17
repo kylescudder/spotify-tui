@@ -17,6 +17,21 @@ case "$(uname -s)" in
   *) echo "unsupported test operating system" >&2; exit 1 ;;
 esac
 
+if [ "$os" = apple-darwin ] && [ "$architecture" = x86_64 ]; then
+  if sh "$repository_root/scripts/install.sh" \
+    --repository example/spotify-tui \
+    --install-dir "$test_root/rejected-intel" \
+    --no-dependencies \
+    --no-service >"$test_root/intel-output" 2>&1; then
+    echo "installer accepted unsupported Intel macOS" >&2
+    exit 1
+  fi
+  grep -F 'Intel macOS is not supported by this release' \
+    "$test_root/intel-output" >/dev/null
+  echo "POSIX installer correctly rejects unsupported Intel macOS"
+  exit 0
+fi
+
 artifact="spotify-tui-${architecture}-${os}.tar.gz"
 mkdir "$test_root/release" "$test_root/stage"
 

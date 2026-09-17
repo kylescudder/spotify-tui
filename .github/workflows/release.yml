@@ -211,21 +211,9 @@ jobs:
             spotifyd_mode: artifact
             spotifyd_patch: false
             spotifyd_max_glibc: "2.31"
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: tar
-            spotifyd_mode: build
-            spotifyd_patch: true
-            spotifyd_features: rodio_backend,local_control
           - os: macos-15
             target: aarch64-apple-darwin
             archive: tar
-            spotifyd_mode: build
-            spotifyd_patch: true
-            spotifyd_features: rodio_backend,local_control
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-            archive: zip
             spotifyd_mode: build
             spotifyd_patch: true
             spotifyd_features: rodio_backend,local_control
@@ -344,21 +332,6 @@ jobs:
             "$spotifyd_binary" \
             "$PWD/spotifyd-upstream/LICENSE"
 
-      - name: Package Windows binaries
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          $stage = Join-Path $env:RUNNER_TEMP "spotify-tui-stage"
-          New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/spotify-tui.exe" $stage
-          Copy-Item "target/${{ matrix.target }}/release/spotify-tui-diagnose.exe" $stage
-          Copy-Item "spotifyd-upstream/target/release/spotifyd.exe" $stage
-          Copy-Item "spotifyd-upstream/LICENSE" (Join-Path $stage "SPOTIFYD-LICENSE")
-          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.md $stage
-          Copy-Item -Recurse themes (Join-Path $stage "themes")
-          New-Item -ItemType Directory -Path dist | Out-Null
-          [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, "dist/spotify-tui-${{ matrix.target }}.zip")
-
       - name: Upload binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -384,7 +357,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Build source, installers, formula, and checksums
+      - name: Build source, installer, formula, and checksums
         shell: bash
         env:
           VERSION: ${{ needs.preflight.outputs.version }}
@@ -393,7 +366,6 @@ jobs:
           git archive --format=tar --prefix="spotify-tui-${VERSION}/" HEAD | gzip -n > dist/spotify-tui-source.tar.gz
 
           sed "s|@REPOSITORY@|${GITHUB_REPOSITORY}|g" scripts/install.sh > dist/install.sh
-          sed "s|@REPOSITORY@|${GITHUB_REPOSITORY}|g" scripts/install.ps1 > dist/install.ps1
           chmod 0755 dist/install.sh
 
           curl --proto '=https' --tlsv1.2 -LsSf \
@@ -405,7 +377,7 @@ jobs:
           sh scripts/render-homebrew-formula.sh "$GITHUB_REPOSITORY" "$VERSION" "$source_sha" dist/spotify-tui.rb
 
           cd dist
-          sha256sum install.sh install.ps1 spotify-* > SHA256SUMS
+          sha256sum install.sh spotify-* > SHA256SUMS
 
       - name: Upload release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -421,7 +393,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Install Linux Spotifyd runtime libraries
@@ -452,41 +424,10 @@ jobs:
           "$install_dir/spotify-tui" --version
           "$install_dir/spotifyd" --version
 
-  test-windows-release:
-    name: Release installer (Windows)
-    needs: [preflight, assemble]
-    runs-on: windows-2025
-    steps:
-      - name: Download release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-bundle
-          path: bundle
-
-      - name: Install and smoke test
-        shell: pwsh
-        run: |
-          $installDir = Join-Path $env:RUNNER_TEMP "spotify-tui-bin"
-          $configDir = Join-Path $env:RUNNER_TEMP "spotifyd-config"
-          ./bundle/install.ps1 `
-            -ReleaseBaseUrl (Resolve-Path bundle) `
-            -AllowInsecureForTests `
-            -NoModifyPath `
-            -NoService `
-            -ForceDependencies `
-            -ConfigDir $configDir `
-            -InstallDir $installDir
-          & (Join-Path $installDir "spotify-tui.exe") --version
-          & (Join-Path $installDir "spotifyd.exe") --version
-
   test-homebrew-release:
-    name: Homebrew formula (${{ matrix.os }})
+    name: Homebrew formula (Apple Silicon)
     needs: [preflight, assemble]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, macos-15-intel]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -519,7 +460,7 @@ jobs:
   publish:
     name: Publish GitHub release
     if: needs.preflight.outputs.publish == 'true'
-    needs: [preflight, nix, assemble, test-posix-release, test-windows-release, test-homebrew-release]
+    needs: [preflight, nix, assemble, test-posix-release, test-homebrew-release]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

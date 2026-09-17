@@ -28,7 +28,7 @@ if [ "$public_release_version" != "$expected_version" ]; then
   exit 1
 fi
 
-for platform in linux macos windows; do
+for platform in linux macos; do
   approved_version=$(
     awk -F '"' -v platform="$platform" '
       /^[[:space:]]*\[platforms\][[:space:]]*$/ { in_platforms = 1; next }
