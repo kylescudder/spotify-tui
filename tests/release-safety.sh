@@ -29,7 +29,6 @@ public_release_version = "0.1.0"
 [platforms]
 linux = "0.1.0"
 macos = "0.1.0"
-windows = "0.1.0"
 EOF
 
 sh "$validator" 0.1.0 "$fixture_dir/approved.toml" >/dev/null ||
@@ -46,7 +45,6 @@ public_release_version = "0.1.0"
 [platforms]
 linux = "0.1.0"
 macos = ""
-windows = "0.1.0"
 EOF
 
 if sh "$validator" 0.1.0 "$fixture_dir/partial.toml" >/dev/null 2>&1; then
@@ -91,8 +89,17 @@ homebrew_style_step=$(step_block "Validate formula style")
 homebrew_install_step=$(step_block "Install and test formula from staged source")
 arm_linux_release=$(matrix_entry ubuntu-24.04-arm)
 x86_linux_release=$(matrix_entry ubuntu-24.04)
+apple_silicon_release=$(matrix_entry macos-15)
 arm_runtime_job=$(job_block spotifyd-linux-runtime "$ci_workflow")
 release_arm_runtime_job=$(job_block spotifyd-linux-arm64)
+
+printf '%s\n' "$apple_silicon_release" |
+  grep -Fq 'target: aarch64-apple-darwin' ||
+  fail "releases must include the supported Apple Silicon target"
+
+if grep -Eq 'macos-15-intel|x86_64-apple-darwin|windows-2025|x86_64-pc-windows-msvc|dist/install\.ps1' "$workflow"; then
+  fail "release workflow must not publish unsupported Intel macOS or Windows assets"
+fi
 
 printf '%s\n' "$arm_linux_release" |
   grep -Fq 'spotifyd_mode: artifact' ||

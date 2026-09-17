@@ -143,6 +143,11 @@ case "$(uname -m)" in
     ;;
 esac
 
+if [ "$platform" = macos ] && [ "$architecture" = x86_64 ]; then
+  echo "install.sh: Intel macOS is not supported by this release" >&2
+  exit 1
+fi
+
 target="${architecture}-${os}"
 artifact="spotify-tui-${target}.tar.gz"
 

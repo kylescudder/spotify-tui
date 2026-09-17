@@ -17,6 +17,8 @@ sh "$repository_root/scripts/render-homebrew-formula.sh" \
 grep -F 'homepage "https://github.com/example/spotify-tui"' "$output" >/dev/null
 grep -F 'releases/download/v1.2.3/spotify-tui-source.tar.gz' "$output" >/dev/null
 grep -F "sha256 \"$checksum\"" "$output" >/dev/null
+grep -F 'depends_on :macos' "$output" >/dev/null
+grep -F 'depends_on arch: :arm64' "$output" >/dev/null
 grep -F 'resource "spotifyd" do' "$output" >/dev/null
 grep -F "conflicts_with \"spotifyd\", because: \"both install a \`spotifyd\` binary\"" "$output" >/dev/null
 grep -F 'rodio_backend,local_control' "$output" >/dev/null

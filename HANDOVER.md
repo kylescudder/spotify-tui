@@ -12,18 +12,17 @@ The target machine is Kyle's NixOS workstation (`stevie`) using Hyprland,
 Ghostty, PipeWire, Home Manager, and the dotfiles repository at
 `~/Documents/Repos/dotfiles`.
 
-Version 1 has three distribution routes:
+Version 1 has three supported distribution routes:
 
 - A Nix flake for Linux on x86_64 and aarch64.
-- Homebrew for macOS on Apple Silicon and Intel.
-- Direct release installers: `curl | sh` for Linux/macOS and a PowerShell
-  installer for Windows. Windows x86_64 is the initial Windows target; add other
-  architectures only after CI and live validation exist for them.
+- Homebrew for macOS on Apple Silicon.
+- A direct `curl | sh` installer for Linux and Apple Silicon macOS.
 
-Linux runtime acceptance is complete. The macOS and Windows playback adapter
-and packaging are implemented, but both still require clean-machine live
-acceptance before their installers can be released; installing successfully
-without working controls is not considered platform support.
+Linux runtime acceptance is complete. Apple Silicon macOS Homebrew acceptance
+was approved for `0.1.0` on 2026-09-17. Intel macOS and Windows remain
+experimental source-only targets: their adapters and installer groundwork stay
+in the repository and ordinary CI, but `0.1.0` does not publish their assets or
+claim support for them.
 
 ## Product boundary
 
@@ -203,7 +202,8 @@ handoff step, not part of initial scaffolding.
 The release infrastructure is implemented in this repository:
 
 - `.github/workflows/ci.yml` runs locked formatting, Clippy, and tests on Linux,
-  macOS, and Windows; validates the Nix flake; and tests both installer families.
+  macOS, and the experimental Windows port; validates the Nix flake; and tests
+  the published POSIX installer plus experimental PowerShell groundwork.
   Actions are pinned to immutable commits and untrusted jobs have read-only
   permissions.
 - `flake.nix` and `flake.lock` expose the Linux package, app, checks,
@@ -213,31 +213,30 @@ The release infrastructure is implemented in this repository:
   launches get an on-demand transient user unit; Home Manager provides the
   persistent login service.
 - `.github/workflows/release.yml` accepts manual non-publishing rehearsals and
-  semantic tags. It natively builds Linux x86_64/aarch64, macOS Intel/Apple
-  Silicon, and Windows x86_64 artifacts, generates checksums, creates GitHub
+  semantic tags. It natively builds Linux x86_64/aarch64 and Apple Silicon
+  macOS artifacts, generates checksums, creates GitHub
   provenance attestations, publishes only after every packaging job passes,
   then updates the Homebrew tap after the assets are public. Manual rehearsals
   can explicitly validate deploy-key and branch-policy write access with one
   content-neutral empty commit to the tap's `main` branch.
   `release-readiness.toml` additionally
   blocks public tags until the exact Cargo package version is explicitly
-  approved for public release and live runtime acceptance on all three
-  platforms; an old version's approvals cannot carry across a version bump.
-- `scripts/install.sh` provides the HTTPS-only `curl | sh` path for Linux/macOS;
-  `scripts/install.ps1` provides the PowerShell path for Windows. Both select the
-  matching release, support pinned versions and user-writable destinations,
-  verify SHA-256 before replacing binaries, preserve existing configuration,
-  install a pinned bundled Spotifyd when necessary on Linux and always install
-  the compatible patched runtime on macOS/Windows, create
-  platform user-startup definitions, and start them in the installation
-  session. Install, upgrade, dependency opt-out, service, invalid-version, and
-  tampered-artifact paths have offline tests.
+  approved for public release and live runtime acceptance on Linux and macOS;
+  an old version's approvals cannot carry across a version bump.
+- `scripts/install.sh` provides the published HTTPS-only `curl | sh` path for
+  Linux and Apple Silicon macOS. It selects the matching release, supports
+  pinned versions and user-writable destinations, verifies SHA-256 before
+  replacing binaries, preserves existing configuration, installs a pinned
+  bundled Spotifyd when necessary on Linux and the compatible patched runtime
+  on macOS, creates platform user-startup definitions, and starts them in the
+  installation session. `scripts/install.ps1` and its tests remain experimental
+  groundwork and are not included in `0.1.0` release assets.
 - Direct archives include Spotifyd's GPLv3 licence and publish its complete
   corresponding 0.4.2 source plus the applied patch beside the binaries. Linux
   uses the hash-pinned upstream x86_64 MPRIS build and a native ARM64 source
   build with ALSA, PulseAudio, MPRIS, and Rustls. ARM64 builds in a digest-pinned
   glibc 2.31 container; both Linux artifacts are checked for obsolete OpenSSL
-  and newer-than-supported glibc dependencies. macOS and Windows build the
+  and newer-than-supported glibc dependencies. Apple Silicon macOS builds the
   Rodio backend plus local control from pinned upstream commit
   `c5b94367014856a8c541dea565cbd332e034fb9e`.
 - `packaging/homebrew/spotify-tui.rb.template` is rendered with the tagged source
@@ -257,12 +256,11 @@ activation is to enable the required repository protections and attestations
 and run the release workflow on GitHub. The scoped cross-repository deploy key
 and `HOMEBREW_TAP_SSH_KEY` secret are configured, and their production-branch
 write was validated successfully by the manual rehearsal. The workflow stamps
-the actual product repository into release installers at build time, so forks
+the actual product repository into the release installer at build time, so forks
 also remain functional.
 
-The infrastructure can build macOS and Windows packages, but those packages must
-not be advertised as functionally complete until the platform runtime adapters
-below pass live acceptance.
+Ordinary CI continues exercising Intel macOS and Windows to preserve future
+portability, but the release workflow deliberately excludes both targets.
 
 ## Remaining execution sequence
 
@@ -286,9 +284,9 @@ stale-result rejection, and exact URI playback on the active Spotifyd device all
 have deterministic tests. Catalogue playback deliberately bypasses Spotifyd
 0.4.2's off-by-one MPRIS `OpenUri` implementation, while a Web API `404` falls
 back to the selected local URI instead of becoming a fatal player state. The
-macOS/Windows local-control adapter and patched Spotifyd packaging are also
-implemented, and controlled tests cover actionable catalogue `403`/`429`
-mapping. The remaining work is:
+local-control adapter and patched Spotifyd packaging are also implemented for
+macOS, with experimental Windows coverage retained in ordinary CI. Controlled
+tests cover actionable catalogue `403`/`429` mapping. The remaining work is:
 
 Live validation on `stevie` has confirmed Spotifyd OAuth, phone-free activation,
 automatic recovery after restarting Spotifyd, a successful `nix run .` build,
@@ -298,42 +296,14 @@ prefetched images, exact selected-track playback, cached authorization after a
 restart, and responsive layouts. Keep those paths in regression coverage, but
 they are no longer open implementation tasks.
 
-1. Live-validate the macOS and Windows platform adapters.
-   - Live-test the Homebrew/launchd and Windows Startup lifecycle adapters
-     alongside the implemented local-control playback adapter.
-   - Verify both Apple Silicon and Intel builds in CI; functional validation on
-     real hardware is required for every architecture advertised by the formula.
-   - Verify the Windows x86_64 build in CI and on a clean Windows machine before
-     publishing its installer.
-
-2. Harden the complete runtime and perform remaining live acceptance on macOS
-   and Windows.
-   - Exercise a fresh Spotifyd OAuth approval, cancellation, service restart,
-     network loss, pause/resume, daemon loss, and daemon reconnection.
-   - Test repeated track changes, missing art, small terminals, shutdown during
-     background work, and terminal restoration after failures.
-   - Repeat equivalent playback, authentication, service lifecycle, and failure
-     tests on a clean macOS Homebrew installation.
-   - Repeat them on a clean Windows installation produced by the PowerShell
-     installer.
-   - On each direct-install platform, prove the bundled Spotifyd starts from its
-     generated user startup definition, preserves an existing config, and can be
-     omitted explicitly without affecting the Spotify TUI installation.
-
-3. Activate and prove the release infrastructure.
-   - Re-run the non-publishing GitHub Actions rehearsal after the Linux ARM64
-     Spotifyd runtime fix and require every Linux, macOS, Windows, Nix,
-     installer, and Homebrew job to pass. The prior rehearsal passed every job
-     except the ARM64 installer, whose upstream Spotifyd archive required
-     OpenSSL 1.1. Its replacement also has ordinary CI coverage for its Rustls
-     configuration and glibc baseline. The prior rehearsal already validated
-     `HOMEBREW_TAP_SSH_KEY` against the tap's production `main` branch with a
-     content-neutral empty commit.
-   - Prove that a tagged release publishes and attests its archives before it
-     updates `Formula/spotify-tui.rb` in `kylescudder/homebrew-tap`.
-   - Do not create a public product tag until platform runtime acceptance passes.
-
-4. Cut over the workstation only after acceptance.
+1. Complete the final non-publishing GitHub Actions rehearsal for the narrowed
+   Linux and Apple Silicon macOS release matrix. Require every supported binary,
+   Nix, POSIX installer, and Homebrew job to pass. The production tap deploy key
+   was already validated with a content-neutral empty commit.
+2. Merge the release-readiness change, create the annotated `v0.1.0` tag, and
+   verify that the tagged workflow publishes and attests its archives before it
+   updates `Formula/spotify-tui.rb` in `kylescudder/homebrew-tap`.
+3. Cut over the workstation only after the tagged release succeeds.
    - Update the dotfiles/Home Manager package and Hyprland workspace-10 launch
      command, perform a clean NixOS rebuild, and retain a simple rollback to
      `spotify_player` until the new setup has been used successfully.
@@ -360,20 +330,21 @@ remaining implementation:
   and a missing or corrupt cache produce actionable errors and never prevent the
   local controller from launching.
 - The complete UI is usable in Ghostty at 80x24 and the normal workspace size,
-  in a supported macOS terminal, in Windows Terminal, and in the documented
-  narrow fallback.
+  in a supported Apple Silicon macOS terminal, and in the documented narrow
+  fallback.
 - Pull-request CI passes Rust and Nix checks on Linux plus Rust and build checks
-  on macOS and Windows from a clean checkout.
+  on macOS from a clean checkout. Experimental Windows CI remains informative
+  but is not a `0.1.0` release gate.
 - `nix build`, `nix flake check`, and the Home Manager integration succeed on a
   clean NixOS system, and the workspace-10 launcher survives a clean rebuild.
 - A release rehearsal proves the Nix flake on supported Linux systems and the
   Homebrew formula on supported macOS systems; the formula passes style, audit,
   install, and smoke tests against the tagged source checksum.
-- The POSIX and PowerShell installers select the correct release artifact,
-  reject checksum mismatches, install Spotifyd plus its licence without
-  elevation by default, preserve existing configuration, keep the required
-  macOS/Windows runtime compatible, and pass clean
-  install/upgrade/version/service smoke tests on every advertised platform.
+- The POSIX installer selects the correct release artifact, rejects checksum
+  mismatches, installs Spotifyd plus its licence without elevation by default,
+  preserves existing configuration, keeps the required macOS runtime
+  compatible, and passes clean install/upgrade/version/service smoke tests on
+  every advertised platform.
 - Formatting, Clippy, all unit/integration tests, and all packaging checks pass at
   the release commit.
 
@@ -395,10 +366,11 @@ restart recovery, track and artwork changes, catalogue navigation, and
 responsive layouts. Keep these commands as a reproducible regression recipe
 before the workstation cutover.
 
-Equivalent end-to-end validation from a fresh Homebrew install is required on a
-macOS test machine. The Homebrew formula is not release-ready until that
-validation is documented and repeatable.
+## Recorded Apple Silicon macOS live validation
 
-Equivalent end-to-end validation from a fresh PowerShell-script installation is
-required on a clean Windows machine. The Windows installer is not release-ready
-until that validation is documented and repeatable.
+The project owner approved Apple Silicon Homebrew acceptance for `0.1.0` on
+2026-09-17 after a staged formula built and installed the bundled patched
+Spotifyd, linked successfully after the expected stock-Spotifyd conflict was
+resolved, passed `brew test`, reported `spotify-tui 0.1.0`, and ran successfully.
+Intel macOS and Windows are explicitly outside the supported `0.1.0` release
+scope.

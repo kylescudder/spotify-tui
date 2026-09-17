@@ -5,6 +5,8 @@ class SpotifyTui < Formula
   sha256 "@SOURCE_SHA256@"
   license all_of: ["MIT", "GPL-3.0-only"]
 
+  depends_on :macos
+  depends_on arch: :arm64
   depends_on "pkgconf" => :build
   depends_on "rust" => :build
   depends_on "openssl@3"
