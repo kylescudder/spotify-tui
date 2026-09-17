@@ -26,6 +26,17 @@ grep -F 'service do' "$output" >/dev/null
 grep -F 'run [opt_bin/"spotifyd", "--no-daemon"]' "$output" >/dev/null
 grep -F 'keep_alive true' "$output" >/dev/null
 
+dependency_order=$(grep '^  depends_on' "$output")
+expected_dependency_order='  depends_on arch: :arm64
+  depends_on "pkgconf" => :build
+  depends_on "rust" => :build
+  depends_on :macos
+  depends_on "openssl@3"'
+if [ "$dependency_order" != "$expected_dependency_order" ]; then
+  echo "rendered formula dependencies are not in Homebrew audit order" >&2
+  exit 1
+fi
+
 if grep -Eq '^  version ' "$output"; then
   echo "published formula must let Homebrew infer its version from the release URL" >&2
   exit 1
