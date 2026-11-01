@@ -22,8 +22,10 @@ const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPIRY_MARGIN: Duration = Duration::from_secs(30);
-const AUTHORIZATION_SCOPES: &str = "user-modify-playback-state";
-const AUTHORIZATION_VERSION: u32 = 2;
+const AUTHORIZATION_SCOPES: &str = "user-modify-playback-state user-read-recently-played \
+    user-top-read user-follow-read playlist-read-private";
+const AUTHORIZATION_VERSION: u32 = 3;
+const HOME_CACHE_FILE: &str = "home-cache.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredToken {
@@ -114,7 +116,13 @@ fn authenticate_with(
     let token = exchange_code(config, &code, &request.verifier, &agent)?;
     let path = token_cache_path(config)?;
     save_token(&path, &token)?;
+    // A new sign-in may be a different account, so its home must not show the old one's.
+    let _ = fs::remove_file(path.with_file_name(HOME_CACHE_FILE));
     Ok(path)
+}
+
+pub(crate) fn home_cache_path(config: &SpotifyApiConfig) -> Result<PathBuf, CatalogAuthError> {
+    Ok(token_cache_path(config)?.with_file_name(HOME_CACHE_FILE))
 }
 
 pub(crate) fn spotify_agent() -> ureq::Agent {
@@ -387,11 +395,20 @@ fn token_cache_path(config: &SpotifyApiConfig) -> Result<PathBuf, CatalogAuthErr
 }
 
 fn save_token(path: &Path, token: &StoredToken) -> Result<(), CatalogAuthError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| CatalogAuthError::WriteToken {
+    let contents =
+        serde_json::to_vec(token).map_err(|source| CatalogAuthError::SerializeToken {
             path: path.to_owned(),
             source,
         })?;
+    write_private_file(path, &contents).map_err(|source| CatalogAuthError::WriteToken {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
     let mut options = fs::OpenOptions::new();
     options.create(true).truncate(true).write(true);
@@ -400,25 +417,12 @@ fn save_token(path: &Path, token: &StoredToken) -> Result<(), CatalogAuthError> 
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options
-        .open(path)
-        .map_err(|source| CatalogAuthError::WriteToken {
-            path: path.to_owned(),
-            source,
-        })?;
-    serde_json::to_writer(&file, token).map_err(|source| CatalogAuthError::SerializeToken {
-        path: path.to_owned(),
-        source,
-    })?;
+    let mut file = options.open(path)?;
+    file.write_all(contents)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|source| {
-            CatalogAuthError::WriteToken {
-                path: path.to_owned(),
-                source,
-            }
-        })?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
@@ -613,7 +617,10 @@ token_cache = {token_cache:?}
         assert!(parameters.contains_key("code_challenge"));
         assert_eq!(
             parameters.get("scope").map(|value| value.as_ref()),
-            Some("user-modify-playback-state")
+            Some(
+                "user-modify-playback-state user-read-recently-played user-top-read \
+                 user-follow-read playlist-read-private"
+            )
         );
         assert!(!parameters.contains_key("client_secret"));
         assert!(request.verifier.len() >= 43);
@@ -707,6 +714,29 @@ token_cache = {token_cache:?}
         ));
         assert!(!is_authenticated(&replacement).expect("mismatch should require authentication"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tokens_from_before_the_home_scopes_require_a_new_sign_in() {
+        let unique = NEXT_TOKEN_PATH.fetch_add(1, Ordering::Relaxed);
+        let path = env::temp_dir().join(format!(
+            "spotify-tui-outdated-scope-token-{}-{unique}.json",
+            std::process::id()
+        ));
+        let config = api_config_with_cache("client-id", &path);
+        let token = StoredToken {
+            access_token: "access".to_owned(),
+            refresh_token: "refresh".to_owned(),
+            expires_at: u64::MAX,
+            authorization_version: 2,
+            client_id: config.client_id().to_owned(),
+        };
+
+        save_token(&path, &token).expect("token cache should be written");
+        let authenticated = is_authenticated(&config).expect("outdated scopes should re-prompt");
+        let _ = fs::remove_file(path);
+
+        assert!(!authenticated);
     }
 
     #[test]

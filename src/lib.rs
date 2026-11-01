@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod catalog_auth;
 pub mod cli;
 pub mod config;
+pub mod home;
 pub mod input;
 pub mod local_control;
 pub mod onboarding;

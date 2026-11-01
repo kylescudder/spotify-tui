@@ -29,6 +29,19 @@ pub enum Command {
     Quit,
 }
 
+impl Command {
+    pub const fn applies_on_home(&self) -> bool {
+        matches!(
+            self,
+            Self::Authenticate
+                | Self::RetryConnection
+                | Self::TogglePlayback
+                | Self::PreviousTrack
+                | Self::NextTrack
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeekDirection {
     Backward,

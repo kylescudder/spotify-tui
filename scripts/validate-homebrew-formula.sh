@@ -20,5 +20,10 @@ brew tap-new --no-git "$tap_name"
 tap_dir=$(brew --repository "$tap_name")
 cp "$formula_path" "$tap_dir/Formula/spotify-tui.rb"
 
+# Homebrew refuses to load untrusted taps, but runners may predate the command.
+if brew trust --help >/dev/null 2>&1; then
+  brew trust --tap "$tap_name"
+fi
+
 brew style --formula "$formula_name"
 brew audit --strict --formula "$formula_name"

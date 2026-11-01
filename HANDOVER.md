@@ -53,12 +53,17 @@ Version 1 must provide:
   search must open the browser and resume automatically without asking the user
   to leave the TUI or run another command. Never ask for or store a client
   secret or Spotify password.
+- A Home page opened on launch, showing recently played tracks, recent releases
+  from followed artists, the user's playlists, and their top artists, so that
+  playback does not depend on already knowing what to search for.
 - Clear empty, disconnected, paused, loading, and error states.
 - A visually intentional layout that works at common terminal sizes.
 
-Version 1 does not include saved-library browsing, playlist editing, lyrics, or
-recommendations. Catalogue browsing is optional and must never be required for
-the controller to start or work.
+Version 1 does not include playlist editing or lyrics. Saved-track browsing and
+top tracks are the planned next additions to Home. Spotify's recommendation
+endpoints are not available to personal developer apps, so Home is built only
+from the user's own listening data. Catalogue browsing is optional and must
+never be required for the controller to start or work.
 
 ## Platform and reliability seams
 
@@ -172,6 +177,23 @@ Startup is gated by a two-step setup flow: it persists the user-supplied client
 ID without discarding existing configuration, then opens the browser for the
 loopback authorization callback. Missing, stale, and corrupt tokens return to
 that retryable flow before the player opens.
+
+Home loads inside the same catalogue worker, one `HomeStep` at a time, and the
+worker checks for user requests between steps. It must stay on that worker:
+PKCE refresh tokens can rotate, so a second token owner could invalidate the
+first and force a browser sign-in. For the same reason nothing in the release
+scan runs concurrently. `BrowserState` holds `HomePage` outside its history so
+sections can update while the user is on another page. Bump
+`AUTHORIZATION_VERSION` whenever `AUTHORIZATION_SCOPES` changes so that existing
+tokens return to the authorization step instead of failing with `403`.
+
+The new-releases section has no Web API of its own. It lists followed artists,
+then requests `album` and `single` separately for each one, because a combined
+`include_groups` response is reported to be grouped by type and a small limit
+would hide a new single behind older albums. The order is not documented, so
+results are always sorted locally. `/artists/{id}/albums` accepts a `limit` of
+at most 10, which the February 2026 changelog does not mention; check an
+endpoint's reference page rather than relying on the changelog.
 
 Spotify's Development Mode restrictions still apply. Spotify uses
 per-developer quota buckets, returns `429` for quota/rate limiting, limits apps

@@ -98,6 +98,8 @@ fn run_tui_app() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let mut app = AppState::default();
+    app.browser_mut()
+        .set_home_sections(config.home().sections());
     let lifecycle = SpotifydLifecycle::from_environment()?;
     let lifecycle_error = lifecycle
         .ensure_running()
@@ -110,7 +112,12 @@ fn run_tui_app() -> Result<(), Box<dyn Error>> {
             .spotify_api()
             .cloned()
             .expect("onboarding guarantees Spotify API configuration"),
+        config.home().clone(),
     )?;
+    if config.home().open_on_startup() {
+        app.browser_mut().apply(BrowserCommand::OpenHome);
+        catalog.load_home(false)?;
+    }
     let services = RuntimeServices {
         playback: &playback,
         artwork: &artwork,
@@ -383,6 +390,11 @@ fn run(
                     app.reduce(AppEvent::QuitRequested);
                     return Ok(SessionOutcome::Quit);
                 }
+                BrowserEffect::LoadHome { force } => {
+                    if let Err(error) = services.catalog.load_home(force) {
+                        app.reduce(AppEvent::PlaybackFailed(error.to_string()));
+                    }
+                }
                 BrowserEffect::Play(uri) => {
                     dispatch(app, services.playback, PlaybackCommand::OpenUri(uri));
                 }
@@ -406,13 +418,16 @@ fn run(
             continue;
         }
 
-        if browser_mode != BrowserMode::Closed {
+        if !matches!(browser_mode, BrowserMode::Closed | BrowserMode::Home) {
             continue;
         }
 
         let Some(command) = input::command_for_key(key) else {
             continue;
         };
+        if browser_mode == BrowserMode::Home && !command.applies_on_home() {
+            continue;
+        }
         match command {
             Command::Quit => {
                 app.reduce(AppEvent::QuitRequested);
@@ -566,7 +581,9 @@ fn drain_catalog_events(app: &mut AppState, services: &RuntimeServices<'_>) {
                     PlaybackCommand::OpenUri(playback.uri().to_owned()),
                 );
             }
-            event @ (CatalogEvent::Loaded { .. } | CatalogEvent::Failed { .. }) => {
+            event @ (CatalogEvent::Loaded { .. }
+            | CatalogEvent::Failed { .. }
+            | CatalogEvent::HomeUpdated(_)) => {
                 app.browser_mut().resolve(event);
             }
         }

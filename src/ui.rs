@@ -10,8 +10,9 @@ use crate::{
     app::{AppState, ArtworkState, ConnectionState},
     artwork::ArtworkRenderer,
     browser::BrowserView,
-    catalog::CatalogItemKind,
+    catalog::{CatalogItem, CatalogItemKind},
     config::Theme,
+    home::{HomePage, HomeSectionStatus},
     onboarding::{OnboardingStage, OnboardingState},
 };
 
@@ -202,7 +203,7 @@ fn render_authorize_onboarding(
         rows[2],
     );
     frame.render_widget(
-        Paragraph::new("A browser will ask Spotify for playback permission.")
+        Paragraph::new("A browser will ask Spotify for playback and library access.")
             .style(Style::default().fg(theme.muted()))
             .alignment(Alignment::Center),
         rows[3],
@@ -384,6 +385,11 @@ pub fn render(
 
     frame.render_widget(block, area);
 
+    if matches!(state.browser().view(), BrowserView::Home) {
+        render_home(frame, inner, state, theme, artwork_renderer);
+        return;
+    }
+
     if !matches!(state.browser().view(), BrowserView::Closed) {
         render_browser(
             frame,
@@ -555,11 +561,11 @@ fn render_playback(
     );
 
     let help = if area.width >= 90 {
-        "/ search · Space play/pause · p/n track · h/l seek · j/k volume · q quit"
-    } else if area.width >= 64 {
-        "/ search · Space play/pause · p/n track · h/l seek · q quit"
-    } else if area.width >= 48 {
-        "/ search · Space play · p/n track · q quit"
+        "/ search · H home · Space play/pause · p/n track · h/l seek · j/k volume · q quit"
+    } else if area.width >= 70 {
+        "/ search · H home · Space play/pause · p/n track · h/l seek · q quit"
+    } else if area.width >= 54 {
+        "/ search · H home · Space play · p/n track · q quit"
     } else {
         "/ search · Space play · q"
     };
@@ -571,6 +577,169 @@ fn render_playback(
     );
 }
 
+fn render_home(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AppState,
+    theme: &Theme,
+    artwork_renderer: &mut ArtworkRenderer,
+) {
+    let home = state.browser().home();
+    let selected = state.browser().home_selected();
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .margin(1)
+        .split(area);
+    let heading = Text::from(vec![
+        Line::from("Home").style(
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::from("Recent plays, new releases, and your library")
+            .style(Style::default().fg(theme.muted())),
+    ]);
+    frame.render_widget(Paragraph::new(heading).wrap(Wrap { trim: true }), layout[0]);
+
+    let list_area = catalog_list_area(
+        frame,
+        layout[1],
+        home.artwork_url(selected).is_some(),
+        state.catalog_artwork(),
+        theme,
+        artwork_renderer,
+    );
+    let (rows, selected_row) = home_rows(home, selected, theme);
+    let list = List::new(rows)
+        .highlight_symbol("› ")
+        .highlight_style(catalog_highlight_style(theme))
+        .scroll_padding(1);
+    let mut list_state = ListState::default().with_selected(selected_row);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    frame.render_widget(
+        home_now_playing(state, theme).alignment(Alignment::Center),
+        layout[2],
+    );
+
+    let help = if area.width >= 104 {
+        "j/k navigate · Enter open/play · Space play/pause · p/n track · / search · R refresh · Esc player"
+    } else if area.width >= 70 {
+        "j/k navigate · Enter open/play · Space pause · / search · Esc player"
+    } else {
+        "j/k navigate · Enter open · / search · Esc player"
+    };
+    frame.render_widget(
+        Paragraph::new(help)
+            .style(Style::default().fg(theme.muted()))
+            .alignment(Alignment::Center),
+        layout[3],
+    );
+}
+
+fn home_rows(
+    home: &HomePage,
+    selected: usize,
+    theme: &Theme,
+) -> (Vec<ListItem<'static>>, Option<usize>) {
+    let mut rows = Vec::new();
+    let mut selected_row = None;
+    let mut item_index = 0;
+    for section in home.sections() {
+        if !rows.is_empty() {
+            rows.push(ListItem::new(""));
+        }
+        let title = if *section.status() == HomeSectionStatus::Loading {
+            format!("{} · loading…", section.kind().title())
+        } else {
+            section.kind().title().to_owned()
+        };
+        rows.push(ListItem::new(
+            Line::from(title).style(
+                Style::default()
+                    .fg(theme.accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ));
+        if let HomeSectionStatus::Notice(notice) = section.status() {
+            rows.push(ListItem::new(
+                Line::from(notice.clone()).style(Style::default().fg(theme.warning())),
+            ));
+        }
+        for item in section.items() {
+            if item_index == selected {
+                selected_row = Some(rows.len());
+            }
+            rows.push(catalog_list_item(item, theme));
+            item_index += 1;
+        }
+        if section.items().is_empty() && *section.status() == HomeSectionStatus::Ready {
+            rows.push(ListItem::new(
+                Line::from(section.kind().empty_message())
+                    .style(Style::default().fg(theme.muted())),
+            ));
+        }
+    }
+    (rows, selected_row)
+}
+
+fn home_now_playing(state: &AppState, theme: &Theme) -> Paragraph<'static> {
+    let Some(playback) = state
+        .playback()
+        .filter(|_| matches!(state.connection(), ConnectionState::Connected))
+    else {
+        return Paragraph::new(status_text(state))
+            .style(Style::default().fg(status_color(state, theme)));
+    };
+    let status = playback.status().to_string().to_ascii_uppercase();
+    let title = playback.track().title.as_deref().unwrap_or("Unknown track");
+    let summary = if playback.track().artists.is_empty() {
+        format!("{status} · {title}")
+    } else {
+        format!(
+            "{status} · {title} — {}",
+            playback.track().artists.join(", ")
+        )
+    };
+    Paragraph::new(summary).style(Style::default().fg(status_color_for_playback(playback, theme)))
+}
+
+fn catalog_list_item(item: &CatalogItem, theme: &Theme) -> ListItem<'static> {
+    let tag = match item.kind() {
+        CatalogItemKind::Artist => "[Artist]",
+        CatalogItemKind::Album => "[Album]",
+        CatalogItemKind::Track => "[Track]",
+        CatalogItemKind::Playlist => "[Playlist]",
+    };
+    let mut spans = vec![
+        Span::styled(format!("{tag:<11}"), Style::default().fg(theme.muted())),
+        Span::styled(
+            item.name().to_owned(),
+            Style::default().fg(theme.foreground()),
+        ),
+    ];
+    if !item.detail().is_empty() {
+        spans.push(Span::styled(
+            format!(" — {}", item.detail()),
+            Style::default().fg(theme.muted()),
+        ));
+    }
+    ListItem::new(Line::from(spans))
+}
+
+fn catalog_highlight_style(theme: &Theme) -> Style {
+    Style::default()
+        .fg(theme.accent())
+        .bg(theme.border())
+        .add_modifier(Modifier::BOLD)
+}
+
 fn render_browser(
     frame: &mut Frame,
     area: Rect,
@@ -580,7 +749,7 @@ fn render_browser(
     artwork_renderer: &mut ArtworkRenderer,
 ) {
     match view {
-        BrowserView::Closed => {}
+        BrowserView::Closed | BrowserView::Home => {}
         BrowserView::Editing { query } => render_search_editor(frame, area, query, theme),
         BrowserView::Loading { label } => {
             render_browser_message(
@@ -588,7 +757,7 @@ fn render_browser(
                 area,
                 label,
                 theme.warning(),
-                "Esc back · q quit",
+                "Esc back · H home · q quit",
                 theme,
             );
         }
@@ -598,7 +767,7 @@ fn render_browser(
                 area,
                 message,
                 theme.error(),
-                "Esc back · / new search · q quit",
+                "Esc back · / new search · H home · q quit",
                 theme,
             );
         }
@@ -639,39 +808,20 @@ fn render_browser(
                     list_area,
                 );
             } else {
-                let items = page.items().iter().map(|item| {
-                    let tag = match item.kind() {
-                        CatalogItemKind::Artist => "[Artist]",
-                        CatalogItemKind::Album => "[Album]",
-                        CatalogItemKind::Track => "[Track]",
-                        CatalogItemKind::Playlist => "[Playlist]",
-                    };
-                    let mut spans = vec![
-                        Span::styled(format!("{tag:<11}"), Style::default().fg(theme.muted())),
-                        Span::styled(
-                            item.name().to_owned(),
-                            Style::default().fg(theme.foreground()),
-                        ),
-                    ];
-                    if !item.detail().is_empty() {
-                        spans.push(Span::styled(
-                            format!(" — {}", item.detail()),
-                            Style::default().fg(theme.muted()),
-                        ));
-                    }
-                    ListItem::new(Line::from(spans))
-                });
-                let list = List::new(items).highlight_symbol("› ").highlight_style(
-                    Style::default()
-                        .fg(theme.accent())
-                        .bg(theme.border())
-                        .add_modifier(Modifier::BOLD),
-                );
+                let items = page
+                    .items()
+                    .iter()
+                    .map(|item| catalog_list_item(item, theme));
+                let list = List::new(items)
+                    .highlight_symbol("› ")
+                    .highlight_style(catalog_highlight_style(theme));
                 let mut list_state = ListState::default().with_selected(Some(*selected));
                 frame.render_stateful_widget(list, list_area, &mut list_state);
             }
 
-            let help = if area.width >= 70 {
+            let help = if area.width >= 80 {
+                "j/k or ↑/↓ navigate · Enter open/play · / search · H home · Esc back · q quit"
+            } else if area.width >= 70 {
                 "j/k or ↑/↓ navigate · Enter open/play · / search · Esc back · q quit"
             } else {
                 "j/k navigate · Enter open · / search · Esc back"
@@ -956,8 +1106,9 @@ mod tests {
         app::{AppEvent, ArtworkState},
         artwork::Artwork,
         browser::BrowserCommand,
-        catalog::{CatalogEvent, CatalogItem, CatalogItemKind, CatalogPage},
-        config::Config,
+        catalog::{CatalogEvent, CatalogItemKind, CatalogPage},
+        config::{Config, HomeSectionKind},
+        home::HomeUpdate,
         playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata},
     };
 
@@ -1453,5 +1604,145 @@ background = "#010203"
             .draw(|frame| render(frame, &state, theme.theme(), &mut artwork_renderer))
             .expect("test backend is infallible");
         assert!(!rendered_text(&narrow_terminal).contains("Loading artwork…"));
+    }
+
+    fn home_item(kind: CatalogItemKind, id: &str, name: &str, detail: &str) -> CatalogItem {
+        CatalogItem::new(
+            kind,
+            id,
+            format!("spotify:{}:{id}", kind.to_string().to_ascii_lowercase()),
+            name,
+            detail,
+            None,
+        )
+    }
+
+    fn home_state() -> AppState {
+        let mut state = AppState::default();
+        state.browser_mut().set_home_sections(&[
+            HomeSectionKind::RecentlyPlayed,
+            HomeSectionKind::NewReleases,
+            HomeSectionKind::Playlists,
+            HomeSectionKind::TopArtists,
+        ]);
+        state.browser_mut().apply(BrowserCommand::OpenHome);
+        state
+    }
+
+    fn render_to_text(state: &AppState, width: u16, height: u16) -> String {
+        let theme = Config::default();
+        let mut artwork_renderer =
+            ArtworkRenderer::halfblocks(theme.theme()).expect("renderer should start");
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("test backend is infallible");
+        terminal
+            .draw(|frame| render(frame, state, theme.theme(), &mut artwork_renderer))
+            .expect("test backend is infallible");
+        rendered_text(&terminal)
+    }
+
+    #[test]
+    fn home_groups_items_under_headings_and_marks_the_selected_item() {
+        let mut state = home_state();
+        for (kind, item) in [
+            (
+                HomeSectionKind::RecentlyPlayed,
+                home_item(CatalogItemKind::Track, "t", "Solar", "Architects"),
+            ),
+            (
+                HomeSectionKind::NewReleases,
+                home_item(
+                    CatalogItemKind::Album,
+                    "a",
+                    "The Sky",
+                    "Architects • 2026-10-30",
+                ),
+            ),
+        ] {
+            state
+                .browser_mut()
+                .resolve(CatalogEvent::HomeUpdated(HomeUpdate {
+                    kind,
+                    items: vec![item],
+                    status: HomeSectionStatus::Ready,
+                }));
+        }
+        state.browser_mut().apply(BrowserCommand::Next);
+
+        let text = render_to_text(&state, 100, 28);
+
+        for expected in [
+            "Home",
+            "Jump back in",
+            "[Track]",
+            "Solar",
+            "New from artists you follow",
+            "› [Album]",
+            "The Sky — Architects • 2026-10-30",
+            "Your playlists · loading…",
+            "Connecting to spotifyd…",
+            "Esc player",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn home_shows_section_failures_and_empty_messages_in_place() {
+        let mut state = home_state();
+        state
+            .browser_mut()
+            .resolve(CatalogEvent::HomeUpdated(HomeUpdate {
+                kind: HomeSectionKind::RecentlyPlayed,
+                items: Vec::new(),
+                status: HomeSectionStatus::Notice("quota exceeded".to_owned()),
+            }));
+        state
+            .browser_mut()
+            .resolve(CatalogEvent::HomeUpdated(HomeUpdate {
+                kind: HomeSectionKind::NewReleases,
+                items: Vec::new(),
+                status: HomeSectionStatus::Ready,
+            }));
+
+        let text = render_to_text(&state, 100, 28);
+
+        assert!(text.contains("quota exceeded"), "{text}");
+        assert!(
+            text.contains("No recent releases from artists you follow"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn home_keeps_the_current_track_in_view() {
+        let mut state = home_state();
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: PlaybackSnapshot {
+                track: TrackMetadata {
+                    track_id: Some("track".to_owned()),
+                    title: Some("Solar".to_owned()),
+                    artists: vec!["Architects".to_owned()],
+                    album: None,
+                    art_url: None,
+                    duration: None,
+                },
+                status: PlaybackStatus::Playing,
+                position: Duration::ZERO,
+                volume: 0.5,
+            },
+            observed_at: Instant::now(),
+        });
+
+        let text = render_to_text(&state, 100, 28);
+
+        assert!(text.contains("PLAYING · Solar — Architects"), "{text}");
+    }
+
+    #[test]
+    fn home_fits_a_small_terminal_without_panicking() {
+        let text = render_to_text(&home_state(), 40, 12);
+
+        assert!(text.contains("Home"), "{text}");
     }
 }

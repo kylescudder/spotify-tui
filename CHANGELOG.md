@@ -47,6 +47,14 @@ uses semantic versioning once public releases begin.
 - Artist-page artwork now follows the selected release, falling back to the
   artist image, while a separate speculative worker prefetches nearby images
   into the shared LRU cache without blocking foreground artwork.
+- A Home page that opens on launch with recently played tracks, recent releases
+  from followed artists, your playlists, and your top artists. Sections load
+  and fail independently, update while you browse, are cached for six hours,
+  and can be reordered, disabled, or tuned under `[home]`.
+- Home needs additional Spotify permissions, so existing users are asked to
+  authorize once more on their next launch.
+- `Esc` on the player now opens Home instead of quitting; `q` and `Ctrl-C` still
+  quit. `H` opens Home from any page.
 - Cached artwork now bypasses the worker queue and is applied before drawing the
   next frame; pending downloads and terminal encoding are checked every 16 ms
   instead of waiting for the 250 ms idle input tick.
