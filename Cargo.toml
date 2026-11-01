@@ -12,6 +12,7 @@ homepage = "https://github.com/kylescudder/spotify-tui"
 base64 = "0.22.1"
 crossterm = "0.29.0"
 directories = "6.0.0"
+gethostname = "1.1.0"
 getrandom = "0.3.4"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 lru = "0.18.4"
@@ -19,6 +20,7 @@ ratatui = "0.30.2"
 ratatui-image = { version = "11.0.8", default-features = false, features = ["crossterm"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.149"
+sha1 = "0.10"
 sha2 = "0.10.9"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }

@@ -23,6 +23,7 @@ const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 enum WorkerCommand {
     Playback(PlaybackCommand),
+    BeginSelection,
     Reconnect,
     Shutdown,
 }
@@ -53,6 +54,7 @@ impl PlaybackRuntime {
         let worker = thread::Builder::new()
             .name("spotify-tui-playback".to_owned())
             .spawn(move || {
+                let mut startup_uri = startup_uri;
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build();
@@ -92,7 +94,7 @@ impl PlaybackRuntime {
                                         &event_tx,
                                         &mut connected,
                                         &mut activation_pending,
-                                        startup_uri.as_deref(),
+                                        &mut startup_uri,
                                         command,
                                     ).await {
                                         break;
@@ -121,7 +123,15 @@ impl PlaybackRuntime {
                                             activation_pending = true;
                                             reconnect_delay = MIN_RECONNECT_DELAY;
                                         }
-                                        Err(_) => {
+                                        Err(error) => {
+                                            // Spotifyd being away is already on screen unless
+                                            // this was waiting for it. Any other failure is why
+                                            // activation cannot work, so it has to be shown.
+                                            if activation_pending
+                                                || error != PlaybackError::Disconnected
+                                            {
+                                                publish_result(&event_tx, Err(error));
+                                            }
                                             activation_pending = false;
                                             reconnect_delay = (reconnect_delay * 2)
                                                 .min(MAX_RECONNECT_DELAY);
@@ -134,7 +144,7 @@ impl PlaybackRuntime {
                                         &event_tx,
                                         &mut connected,
                                         &mut activation_pending,
-                                        startup_uri.as_deref(),
+                                        &mut startup_uri,
                                         command,
                                     ).await {
                                         break;
@@ -159,6 +169,12 @@ impl PlaybackRuntime {
     pub fn dispatch(&self, command: PlaybackCommand) -> Result<(), PlaybackRuntimeError> {
         self.command_tx
             .send(WorkerCommand::Playback(command))
+            .map_err(|_| PlaybackRuntimeError)
+    }
+
+    pub fn begin_selection(&self) -> Result<(), PlaybackRuntimeError> {
+        self.command_tx
+            .send(WorkerCommand::BeginSelection)
             .map_err(|_| PlaybackRuntimeError)
     }
 
@@ -207,7 +223,7 @@ async fn handle_command<S: PlaybackSource>(
     event_tx: &mpsc::Sender<PlaybackEvent>,
     connected: &mut bool,
     activation_pending: &mut bool,
-    startup_uri: Option<&str>,
+    startup_uri: &mut Option<String>,
     command: Option<WorkerCommand>,
 ) -> bool {
     match command {
@@ -221,12 +237,23 @@ async fn handle_command<S: PlaybackSource>(
             *activation_pending = false;
             true
         }
+        // Spotify can make Spotifyd active for a selection before this worker
+        // sees it, and the startup URI must not then replace what was chosen.
+        Some(WorkerCommand::BeginSelection) => {
+            *startup_uri = None;
+            true
+        }
         Some(WorkerCommand::Reconnect) => {
             let _ = event_tx.send(PlaybackEvent::Connecting);
             match recover_source(source).await {
                 Ok(Some(snapshot)) => {
-                    let snapshot =
-                        finish_activation(source, snapshot, *activation_pending, startup_uri).await;
+                    let snapshot = finish_activation(
+                        source,
+                        snapshot,
+                        *activation_pending,
+                        startup_uri.as_deref(),
+                    )
+                    .await;
                     *connected = publish_result(event_tx, snapshot);
                     *activation_pending = false;
                 }
@@ -364,6 +391,62 @@ mod tests {
         }
     }
 
+    // Spotifyd's bus name and session arrive separately, and a selection can
+    // make it active from Spotify's side without any local activation.
+    struct ScriptedActivationSource {
+        activation_results: tokio::sync::Mutex<Vec<Result<(), PlaybackError>>>,
+        playable: Arc<AtomicBool>,
+        snapshot: PlaybackSnapshot,
+        commands: mpsc::Sender<PlaybackCommand>,
+    }
+
+    impl PlaybackSource for ScriptedActivationSource {
+        async fn activate(&self) -> Result<(), PlaybackError> {
+            let mut results = self.activation_results.lock().await;
+            if results.len() > 1 {
+                results.remove(0)
+            } else {
+                results
+                    .first()
+                    .cloned()
+                    .unwrap_or(Err(PlaybackError::Disconnected))
+            }
+        }
+
+        fn snapshot(&self) -> impl Future<Output = Result<PlaybackSnapshot, PlaybackError>> + Send {
+            future::ready(if self.playable.load(Ordering::Acquire) {
+                Ok(self.snapshot.clone())
+            } else {
+                Err(PlaybackError::Disconnected)
+            })
+        }
+
+        async fn wait_for_change(&self) -> Result<PlaybackSnapshot, PlaybackError> {
+            future::pending().await
+        }
+
+        fn execute(
+            &self,
+            command: PlaybackCommand,
+        ) -> impl Future<Output = Result<(), PlaybackError>> + Send {
+            let _ = self.commands.send(command);
+            future::ready(Ok(()))
+        }
+    }
+
+    fn scripted_source(
+        activation_results: Vec<Result<(), PlaybackError>>,
+        playable: Arc<AtomicBool>,
+        commands: mpsc::Sender<PlaybackCommand>,
+    ) -> ScriptedActivationSource {
+        ScriptedActivationSource {
+            activation_results: tokio::sync::Mutex::new(activation_results),
+            playable,
+            snapshot: snapshot(),
+            commands,
+        }
+    }
+
     fn snapshot() -> PlaybackSnapshot {
         PlaybackSnapshot {
             status: PlaybackStatus::Playing,
@@ -453,6 +536,69 @@ mod tests {
             ))
         );
         assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
+    }
+
+    #[test]
+    fn a_selection_stops_the_startup_uri_overriding_it() {
+        let playable = Arc::new(AtomicBool::new(false));
+        let (command_tx, command_rx) = mpsc::channel();
+        let source = scripted_source(vec![Ok(())], Arc::clone(&playable), command_tx);
+        let runtime = PlaybackRuntime::start_with_factory(
+            || async move { Ok(source) },
+            Some("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".to_owned()),
+        )
+        .expect("runtime should start");
+
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+        runtime
+            .begin_selection()
+            .expect("runtime should accept selections");
+        runtime
+            .reconnect()
+            .expect("runtime should accept reconnect requests");
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+
+        playable.store(true, Ordering::Release);
+        assert!(matches!(receive_event(&runtime), PlaybackEvent::Updated(_)));
+        assert_eq!(
+            command_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+    }
+
+    #[test]
+    fn activation_failures_replace_a_stale_disconnected_state() {
+        let (command_tx, _command_rx) = mpsc::channel();
+        let source = scripted_source(
+            vec![
+                Err(PlaybackError::Disconnected),
+                Err(PlaybackError::NoSpotifySession),
+            ],
+            Arc::new(AtomicBool::new(false)),
+            command_tx,
+        );
+        let runtime = PlaybackRuntime::start_with_source(source).expect("runtime should start");
+
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Disconnected);
+        assert_eq!(
+            receive_event(&runtime),
+            PlaybackEvent::Failed("spotifyd has not connected to Spotify yet".to_owned())
+        );
+    }
+
+    #[test]
+    fn waiting_for_activation_reports_spotifyd_going_away() {
+        let (command_tx, _command_rx) = mpsc::channel();
+        let source = scripted_source(
+            vec![Ok(()), Err(PlaybackError::Disconnected)],
+            Arc::new(AtomicBool::new(false)),
+            command_tx,
+        );
+        let runtime = PlaybackRuntime::start_with_source(source).expect("runtime should start");
+
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Connecting);
+        assert_eq!(receive_event(&runtime), PlaybackEvent::Disconnected);
     }
 
     #[test]

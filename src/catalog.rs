@@ -22,6 +22,7 @@ use crate::{
     },
     config::{HomeConfig, SpotifyApiConfig, TopArtistsRange},
     home::{HomeData, HomeRelease, HomeStep, HomeUpdate, HomeWorker, parse_release_day, unix_now},
+    spotifyd_device,
 };
 
 const API_BASE_URL: &str = "https://api.spotify.com/v1/";
@@ -113,9 +114,13 @@ impl CatalogItem {
     }
 
     pub fn playback(&self) -> CatalogPlayback {
+        let context_uri = match self.kind {
+            CatalogItemKind::Playlist => Some(self.uri.clone()),
+            _ => self.playback_context_uri.clone(),
+        };
         CatalogPlayback {
             uri: self.uri.clone(),
-            context_uri: self.playback_context_uri.clone(),
+            context_uri,
         }
     }
 }
@@ -373,15 +378,25 @@ impl SpotifyCatalogSource {
             self.refresh_or_authenticate()?;
         }
 
-        match request_playback(&self.agent, playback, self.token.access_token()) {
+        play_on_spotifyd(&spotifyd_device::device_id(), |device_id| {
+            self.request_play(playback, device_id)
+        })
+    }
+
+    fn request_play(
+        &mut self,
+        playback: &CatalogPlayback,
+        device_id: Option<&str>,
+    ) -> Result<(), CatalogError> {
+        match request_playback(&self.agent, playback, device_id, self.token.access_token()) {
             Err(ureq::Error::StatusCode(401)) => {
                 self.refresh_or_authenticate()?;
-                request_playback(&self.agent, playback, self.token.access_token())
+                request_playback(&self.agent, playback, device_id, self.token.access_token())
                     .map_err(CatalogError::from_playback_http)?;
             }
             Err(ureq::Error::StatusCode(403)) => {
                 self.authenticate()?;
-                request_playback(&self.agent, playback, self.token.access_token())
+                request_playback(&self.agent, playback, device_id, self.token.access_token())
                     .map_err(CatalogError::from_playback_http)?;
             }
             result => {
@@ -462,31 +477,50 @@ fn request_json<T: DeserializeOwned>(
     response.body_mut().read_json()
 }
 
+// Without a device ID Spotify only reaches a device it already considers active.
+// Local activation does not make Spotifyd one, but naming it works even while
+// idle. A missing device falls back to whichever one is active, because the ID
+// is derived locally and may not match a Spotifyd configured elsewhere.
+fn play_on_spotifyd(
+    device_id: &str,
+    mut request: impl FnMut(Option<&str>) -> Result<(), CatalogError>,
+) -> Result<(), CatalogError> {
+    match request(Some(device_id)) {
+        Err(CatalogError::PlaybackUnavailable) => request(None),
+        result => result,
+    }
+}
+
 fn request_playback(
     agent: &ureq::Agent,
     playback: &CatalogPlayback,
+    device_id: Option<&str>,
     access_token: &str,
 ) -> Result<(), ureq::Error> {
     let authorization = format!("Bearer {access_token}");
     let body = playback_body(playback);
-    agent
+    let mut request = agent
         .put("https://api.spotify.com/v1/me/player/play")
-        .header("Authorization", authorization)
-        .send_json(&body)?;
+        .header("Authorization", authorization);
+    if let Some(device_id) = device_id {
+        request = request.query("device_id", device_id);
+    }
+    request.send_json(&body)?;
     Ok(())
 }
 
 fn playback_body(playback: &CatalogPlayback) -> serde_json::Value {
-    playback.context_uri().map_or_else(
-        || serde_json::json!({ "uris": [playback.uri()] }),
-        |context_uri| {
-            serde_json::json!({
-                "context_uri": context_uri,
-                "offset": { "uri": playback.uri() },
-                "position_ms": 0
-            })
-        },
-    )
+    match playback.context_uri() {
+        None => serde_json::json!({ "uris": [playback.uri()] }),
+        Some(context_uri) if context_uri == playback.uri() => {
+            serde_json::json!({ "context_uri": context_uri, "position_ms": 0 })
+        }
+        Some(context_uri) => serde_json::json!({
+            "context_uri": context_uri,
+            "offset": { "uri": playback.uri() },
+            "position_ms": 0
+        }),
+    }
 }
 
 fn api_url(path: &str) -> Result<Url, CatalogError> {
@@ -1590,6 +1624,63 @@ mod tests {
             .expect("playback request should be accepted");
 
         assert_eq!(play_rx.recv_timeout(Duration::from_secs(1)), Ok(playback));
+    }
+
+    #[test]
+    fn selections_target_spotifyd_directly() {
+        let mut requests = Vec::new();
+        let result = play_on_spotifyd("spotifyd", |device_id| {
+            requests.push(device_id.map(str::to_owned));
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(requests, vec![Some("spotifyd".to_owned())]);
+    }
+
+    #[test]
+    fn a_missing_spotifyd_device_falls_back_to_the_active_device() {
+        let mut requests = Vec::new();
+        let result = play_on_spotifyd("spotifyd", |device_id| {
+            requests.push(device_id.map(str::to_owned));
+            if device_id.is_some() {
+                Err(CatalogError::PlaybackUnavailable)
+            } else {
+                Ok(())
+            }
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(requests, vec![Some("spotifyd".to_owned()), None]);
+    }
+
+    #[test]
+    fn other_playback_failures_are_not_retried_on_another_device() {
+        let mut requests = 0;
+        let result = play_on_spotifyd("spotifyd", |_| {
+            requests += 1;
+            Err(CatalogError::QuotaExceeded)
+        });
+
+        assert!(matches!(result, Err(CatalogError::QuotaExceeded)));
+        assert_eq!(requests, 1);
+    }
+
+    #[test]
+    fn a_playlist_plays_as_its_own_context() {
+        let playlist = CatalogItem::new(
+            CatalogItemKind::Playlist,
+            "mix",
+            "spotify:playlist:mix",
+            "Mix",
+            "",
+            None,
+        );
+
+        assert_eq!(
+            playback_body(&playlist.playback()),
+            serde_json::json!({ "context_uri": "spotify:playlist:mix", "position_ms": 0 })
+        );
     }
 
     #[test]

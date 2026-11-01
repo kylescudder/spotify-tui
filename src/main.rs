@@ -15,7 +15,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use spotify_tui::{
-    app::{AppEvent, AppState, ArtworkState, Command},
+    app::{AppEvent, AppState, ArtworkState, Command, ConnectionState},
     artwork::{ArtworkEvent, ArtworkRenderer, ArtworkRuntime, ArtworkTarget},
     auth::{self, AuthOutcome},
     browser::{BrowserCommand, BrowserEffect, BrowserMode},
@@ -395,11 +395,9 @@ fn run(
                         app.reduce(AppEvent::PlaybackFailed(error.to_string()));
                     }
                 }
-                BrowserEffect::Play(uri) => {
-                    dispatch(app, services.playback, PlaybackCommand::OpenUri(uri));
-                }
-                BrowserEffect::PlayTrack(target) => {
-                    if let Err(error) = services.catalog.play(target) {
+                BrowserEffect::Play(selection) => {
+                    begin_selection(app, services);
+                    if let Err(error) = services.catalog.play(selection) {
                         app.reduce(AppEvent::PlaybackFailed(error.to_string()));
                     }
                 }
@@ -501,6 +499,11 @@ fn drain_playback_events(app: &mut AppState, services: &RuntimeServices<'_>) {
                         message: error.to_string(),
                     });
                 }
+                if let Some(selection) = app.take_waiting_selection()
+                    && let Err(error) = services.catalog.play(selection)
+                {
+                    app.reduce(AppEvent::PlaybackFailed(error.to_string()));
+                }
             }
             PlaybackEvent::Disconnected => {
                 if let Some(message) = services.lifecycle_error.borrow().clone() {
@@ -574,6 +577,13 @@ fn drain_catalog_events(app: &mut AppState, services: &RuntimeServices<'_>) {
             CatalogEvent::PlaybackFailed { message } => {
                 app.reduce(AppEvent::PlaybackFailed(message));
             }
+            // Spotifyd has no local player until it is active, so a selection
+            // Spotify could not deliver waits to be requested again by then.
+            CatalogEvent::PlaybackFallback { playback }
+                if !matches!(app.connection(), ConnectionState::Connected) =>
+            {
+                app.wait_for_spotifyd(playback);
+            }
             CatalogEvent::PlaybackFallback { playback } => {
                 dispatch(
                     app,
@@ -587,6 +597,16 @@ fn drain_catalog_events(app: &mut AppState, services: &RuntimeServices<'_>) {
                 app.browser_mut().resolve(event);
             }
         }
+    }
+}
+
+fn begin_selection(app: &mut AppState, services: &RuntimeServices<'_>) {
+    app.forget_waiting_selection();
+    if let Err(error) = services.playback.begin_selection() {
+        app.reduce(AppEvent::PlaybackFailed(error.to_string()));
+    }
+    if !matches!(app.connection(), ConnectionState::Connected) {
+        reconnect(app, services);
     }
 }
 

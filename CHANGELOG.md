@@ -55,6 +55,14 @@ uses semantic versioning once public releases begin.
   authorize once more on their next launch.
 - `Esc` on the player now opens Home instead of quitting; `q` and `Ctrl-C` still
   quit. `H` opens Home from any page.
+- Selecting a track or playlist now targets Spotifyd by device ID, so it plays
+  straight after login instead of dropping to "spotifyd is disconnected", and
+  always plays locally rather than on another active device. A selection made
+  while Spotifyd is still starting waits for it, a stopped daemon is restarted,
+  and `playback.startup_uri` no longer replaces what was just selected.
+- Activation failures are now shown instead of leaving a stale disconnected
+  screen, including when Spotifyd has no Spotify session yet, and D-Bus calls
+  time out so a stuck Spotifyd cannot block the retry key.
 - Cached artwork now bypasses the worker queue and is applied before drawing the
   next frame; pending downloads and terminal encoding are checked every 16 ms
   instead of waiting for the 250 ms idle input tick.

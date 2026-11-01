@@ -12,5 +12,6 @@ pub mod local_control;
 pub mod onboarding;
 pub mod playback;
 pub mod playback_runtime;
+pub mod spotifyd_device;
 pub mod spotifyd_lifecycle;
 pub mod ui;

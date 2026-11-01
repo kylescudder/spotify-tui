@@ -4,7 +4,7 @@
 
 Build a polished, keyboard-first Spotify TUI. Audio playback is always local
 through `spotifyd`; Spotify Web API catalogue access supplies search and browse
-data and starts exact catalogue selections on the active Spotifyd device. A
+data and starts exact catalogue selections on the local Spotifyd device. A
 startup preflight requires its client configuration and local authorization
 token before the player opens.
 
@@ -107,7 +107,17 @@ exists. Use that local interface to make Spotifyd active, then rediscover the
 process-unique MPRIS name. Do not require the user to select the device from a
 phone or another Spotify client. If `playback.startup_uri` is configured, open
 it through MPRIS after activation; otherwise preserve Spotify's existing
-resumable context.
+resumable context. A selection clears the startup URI first, because Spotify can
+activate Spotifyd for that selection and the two would otherwise race.
+
+`TransferPlayback` only calls librespot's `Spirc::activate`, which marks the
+device active locally. It does not make Spotify treat Spotifyd as the active
+device, and the next cluster update naming another device, or none, disconnects
+it again and removes its MPRIS name. Never rely on it to make a Web API request
+succeed. Spotifyd serves `rs.spotifyd.Controls` only once it has a Spotify
+session, although it owns its bus name from launch, so an unknown-object reply
+means no session rather than a failed call. zbus method calls have no default
+timeout, so the session connection sets one.
 
 Spotifyd does not expose the Linux D-Bus/MPRIS interface on macOS or Windows.
 Those platforms therefore use the `local_control` feature patched into the
@@ -158,7 +168,7 @@ platform player adapter -> PlaybackSource -> AppState -> Ratatui view
 art URL/cache           -> ArtworkSource -------^
 keyboard                -> Command dispatcher -> PlaybackSource
 Spotify Web API         -> CatalogSource -> BrowserState -> Ratatui view
-selected Spotify URI    ----------------> PlaybackSource
+selected Spotify URI    -> CatalogSource -> Spotifyd, by device ID
 ```
 
 The view must depend on `AppState`, not D-Bus, HTTP, or subprocess handles. This
@@ -171,7 +181,7 @@ Authorization Code with PKCE. The refresh token is stored in the user's state
 directory with owner-only Unix permissions; no client secret is accepted.
 `CatalogSource` normalizes Search, artist releases, and album tracks while the
 worker owns HTTP and token refresh away from the render/input thread. Selecting
-playable content passes its URI to `PlaybackSource`, so the Web API never
+playable content asks the Web API to start it on Spotifyd, so the Web API never
 streams audio or becomes the playback transport.
 Startup is gated by a two-step setup flow: it persists the user-supplied client
 ID without discarding existing configuration, then opens the browser for the
@@ -304,10 +314,18 @@ previews on artist pages, responsive now-playing and catalogue artwork, and
 normal/narrow layout tests. The catalogue vertical
 slice is implemented behind `CatalogSource`: PKCE authentication and token
 refresh, typed search results, artist releases, album tracks, keyboard history,
-stale-result rejection, and exact URI playback on the active Spotifyd device all
+stale-result rejection, and exact URI playback on the local Spotifyd device all
 have deterministic tests. Catalogue playback deliberately bypasses Spotifyd
-0.4.2's off-by-one MPRIS `OpenUri` implementation, while a Web API `404` falls
-back to the selected local URI instead of becoming a fatal player state. The
+0.4.2's off-by-one MPRIS `OpenUri` implementation. Requests name Spotifyd with
+`device_id`, because Spotify only sends an untargeted request to a device it
+already considers active, while a named idle device runs librespot's `Play`
+handler, which activates it and so brings up MPRIS. Spotifyd exposes neither its
+name nor its ID locally, so `spotifyd_device` reads `device_name` from the same
+config locations and derives the ID as Spotifyd 0.4.2 does, the hex SHA-1 of the
+name; recheck this when updating the pin. A `404` retries without a device, since
+that ID can be wrong for a config in an unknown location. A final `404` while
+Spotifyd is unreachable holds the selection in `AppState` and repeats the Web API
+request on the next snapshot, and only a connected player uses `OpenUri`. The
 macOS/Windows local-control adapter and patched Spotifyd packaging are also
 implemented, and controlled tests cover actionable catalogue `403`/`429`
 mapping. The remaining work is:
