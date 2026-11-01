@@ -48,7 +48,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(LaunchMode::Version) => {
-            println!("spotify-tui {}", cli::VERSION);
+            println!("{}", cli::version_line());
             ExitCode::SUCCESS
         }
         Err(error) => {
