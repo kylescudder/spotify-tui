@@ -15,6 +15,8 @@
           && builtins.baseNameOf path != "result";
       };
       cargoManifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+      # Shown by `spotify-tui --version`, so a rebuilt flake input is identifiable.
+      buildRevision = self.shortRev or self.dirtyShortRev or "unknown";
       packageFor = system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -25,6 +27,7 @@
           src = source;
 
           cargoLock.lockFile = ./Cargo.lock;
+          SPOTIFY_TUI_BUILD_REVISION = buildRevision;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           nativeCheckInputs = [ pkgs.dbus ];
 

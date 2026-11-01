@@ -15,6 +15,20 @@ Usage:
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Source commit stamped in by the Nix flake; absent from Cargo builds.
+pub const BUILD_REVISION: Option<&str> = option_env!("SPOTIFY_TUI_BUILD_REVISION");
+
+pub fn version_line() -> String {
+    format_version_line(VERSION, BUILD_REVISION)
+}
+
+fn format_version_line(version: &str, revision: Option<&str>) -> String {
+    match revision.filter(|revision| !revision.is_empty()) {
+        Some(revision) => format!("spotify-tui {version} ({revision})"),
+        None => format!("spotify-tui {version}"),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchMode {
     Tui,
@@ -113,6 +127,16 @@ mod tests {
             LaunchMode::Version
         );
         assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn version_line_names_the_build_revision_when_known() {
+        assert_eq!(
+            format_version_line("0.1.0", Some("98f9592")),
+            "spotify-tui 0.1.0 (98f9592)"
+        );
+        assert_eq!(format_version_line("0.1.0", Some("")), "spotify-tui 0.1.0");
+        assert_eq!(format_version_line("0.1.0", None), "spotify-tui 0.1.0");
     }
 
     #[test]
