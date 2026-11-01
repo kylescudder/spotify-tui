@@ -16,6 +16,10 @@ use zbus::{
 const SPOTIFYD_BUS_NAME: &str = "org.mpris.MediaPlayer2.spotifyd";
 #[cfg(target_os = "linux")]
 const SPOTIFYD_CONTROL_BUS_NAME: &str = "rs.spotifyd";
+// zbus waits forever by default, which would leave the worker unable to report
+// a stuck Spotifyd or act on a retry.
+#[cfg(target_os = "linux")]
+const DBUS_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(target_os = "linux")]
 fn is_spotifyd_bus_name(name: &str) -> bool {
@@ -96,10 +100,12 @@ pub enum PlaybackCommand {
     OpenUri(String),
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum PlaybackError {
     #[error("spotifyd is disconnected")]
     Disconnected,
+    #[error("spotifyd has not connected to Spotify yet")]
+    NoSpotifySession,
     #[error("could not connect to the session bus: {0}")]
     SessionBus(String),
     #[error("MPRIS request failed: {0}")]
@@ -139,7 +145,10 @@ pub type PlatformPlaybackSource = crate::local_control::LocalControlPlaybackSour
 #[cfg(target_os = "linux")]
 impl MprisPlaybackSource {
     pub async fn connect() -> Result<Self, PlaybackError> {
-        let connection = Connection::session()
+        let connection = zbus::connection::Builder::session()
+            .map_err(|error| PlaybackError::SessionBus(error.to_string()))?
+            .method_timeout(DBUS_CALL_TIMEOUT)
+            .build()
             .await
             .map_err(|error| PlaybackError::SessionBus(error.to_string()))?;
 
@@ -225,7 +234,7 @@ impl PlaybackSource for MprisPlaybackSource {
             .await
             .map_err(control_error)?;
 
-        controls.transfer_playback().await.map_err(control_error)
+        controls.transfer_playback().await.map_err(activation_error)
     }
 
     async fn snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
@@ -372,6 +381,28 @@ fn control_error(error: impl fmt::Display) -> PlaybackError {
     PlaybackError::Control(error.to_string())
 }
 
+// Spotifyd owns its bus name from launch but only serves its controls once it
+// has a Spotify session.
+#[cfg(target_os = "linux")]
+fn activation_error(error: zbus::Error) -> PlaybackError {
+    match &error {
+        zbus::Error::MethodError(name, ..) if is_missing_object_error(name.as_str()) => {
+            PlaybackError::NoSpotifySession
+        }
+        _ => control_error(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_missing_object_error(name: &str) -> bool {
+    matches!(
+        name,
+        "org.freedesktop.DBus.Error.UnknownObject"
+            | "org.freedesktop.DBus.Error.UnknownInterface"
+            | "org.freedesktop.DBus.Error.UnknownMethod"
+    )
+}
+
 #[cfg(target_os = "linux")]
 fn normalize_metadata(mut metadata: HashMap<String, OwnedValue>) -> TrackMetadata {
     TrackMetadata {
@@ -429,6 +460,17 @@ mod tests {
             microseconds_to_duration(1_500_000),
             Duration::from_millis(1_500)
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_controls_mean_spotifyd_has_no_session() {
+        assert!(is_missing_object_error(
+            "org.freedesktop.DBus.Error.UnknownObject"
+        ));
+        assert!(!is_missing_object_error(
+            "org.freedesktop.DBus.Error.AccessDenied"
+        ));
     }
 
     #[cfg(target_os = "linux")]

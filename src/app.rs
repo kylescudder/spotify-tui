@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use crate::{
     artwork::Artwork,
     browser::BrowserState,
+    catalog::CatalogPlayback,
     playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata},
 };
 
@@ -129,6 +130,7 @@ pub struct AppState {
     catalog_artwork: ArtworkState,
     catalog_artwork_url: Option<String>,
     browser: BrowserState,
+    waiting_selection: Option<CatalogPlayback>,
     track_revision: u64,
     catalog_revision: u64,
     should_quit: bool,
@@ -143,6 +145,7 @@ impl Default for AppState {
             catalog_artwork: ArtworkState::Unavailable,
             catalog_artwork_url: None,
             browser: BrowserState::default(),
+            waiting_selection: None,
             track_revision: 0,
             catalog_revision: 0,
             should_quit: false,
@@ -157,6 +160,24 @@ impl AppState {
 
     pub const fn playback(&self) -> Option<&PlaybackState> {
         self.playback.as_ref()
+    }
+
+    pub fn wait_for_spotifyd(&mut self, selection: CatalogPlayback) {
+        self.waiting_selection = Some(selection);
+    }
+
+    pub fn forget_waiting_selection(&mut self) {
+        self.waiting_selection = None;
+    }
+
+    // Anything that started playing in the meantime is newer than the selection.
+    pub fn take_waiting_selection(&mut self) -> Option<CatalogPlayback> {
+        let selection = self.waiting_selection.take()?;
+        let already_playing = self
+            .playback
+            .as_ref()
+            .is_some_and(|playback| *playback.status() == PlaybackStatus::Playing);
+        (!already_playing).then_some(selection)
     }
 
     pub const fn artwork(&self) -> &ArtworkState {
@@ -282,6 +303,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::{CatalogItem, CatalogItemKind};
     use image::DynamicImage;
 
     fn snapshot(track_id: &str, status: PlaybackStatus, position: Duration) -> PlaybackSnapshot {
@@ -439,6 +461,43 @@ mod tests {
                 .position_at(observed_at + Duration::from_secs(30)),
             Duration::from_secs(90)
         );
+    }
+
+    fn selection() -> CatalogPlayback {
+        CatalogItem::new(
+            CatalogItemKind::Track,
+            "one",
+            "spotify:track:one",
+            "One",
+            "",
+            None,
+        )
+        .playback()
+    }
+
+    #[test]
+    fn a_waiting_selection_is_handed_over_once() {
+        let mut state = AppState::default();
+        state.wait_for_spotifyd(selection());
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: snapshot("one", PlaybackStatus::Stopped, Duration::ZERO),
+            observed_at: Instant::now(),
+        });
+
+        assert_eq!(state.take_waiting_selection(), Some(selection()));
+        assert_eq!(state.take_waiting_selection(), None);
+    }
+
+    #[test]
+    fn playback_that_started_meanwhile_replaces_a_waiting_selection() {
+        let mut state = AppState::default();
+        state.wait_for_spotifyd(selection());
+        state.reduce(AppEvent::PlaybackUpdated {
+            snapshot: snapshot("two", PlaybackStatus::Playing, Duration::ZERO),
+            observed_at: Instant::now(),
+        });
+
+        assert_eq!(state.take_waiting_selection(), None);
     }
 
     #[test]

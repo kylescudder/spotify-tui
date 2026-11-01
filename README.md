@@ -301,7 +301,7 @@ the normal path or its generated configuration lives elsewhere:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SPOTIFY_TUI_SPOTIFYD` | `spotifyd` | Spotifyd executable or absolute path. |
-| `SPOTIFY_TUI_SPOTIFYD_CONFIG` | Unset | Config path passed to Spotifyd for authentication and automatic daemon startup. |
+| `SPOTIFY_TUI_SPOTIFYD_CONFIG` | Unset | Config path passed to Spotifyd for authentication and automatic daemon startup, and read for its `device_name`. Set this if Spotifyd's config is not in its default location and sets a custom name. |
 | `SPOTIFY_TUI_SPOTIFYD_SERVICE` | Platform default | systemd user unit or launchd label managed by the TUI. |
 | `SPOTIFY_TUI_SYSTEMCTL` | `systemctl` | `systemctl` executable or absolute path. |
 | `SPOTIFY_TUI_SYSTEMD_RUN` | `systemd-run` | Linux transient-user-service executable or absolute path. |
@@ -381,10 +381,14 @@ choose the first content in a Spotify session that has no resumable context.
 An artist page shows the artist's album and single releases. Its artwork preview
 follows the selected release, falling back to the artist image when a release
 has no cover. Opening a release shows its tracks. Selecting a track asks Spotify
-to start that exact URI on the active Spotifyd device, retaining its album as
-the playback context. This avoids an off-by-one bug in stock Spotifyd 0.4.2's
-MPRIS `OpenUri` implementation; the bundled macOS/Windows runtime selects the
-exact URI within that context instead of calculating a track-number offset.
+to start that exact URI on your Spotifyd device, retaining its album as the
+playback context, and playlists start the same way. Naming the device means a
+selection works straight after login, before Spotify considers Spotifyd active,
+and always plays locally even if another device is active. This also avoids an
+off-by-one bug in stock Spotifyd 0.4.2's MPRIS `OpenUri` implementation; the
+bundled macOS/Windows runtime selects the exact URI within that context instead
+of calculating a track-number offset. If Spotifyd is still starting, the
+selection waits and plays once it connects.
 Play/pause, previous/next, seeking, volume, and now-playing state remain on the
 platform's local playback connection.
 
@@ -403,7 +407,7 @@ ID. No client secret is used or stored.
 
 4. Press `Enter` to open Spotify, then approve access in the browser. Approval
    includes permission to control playback so catalogue track selection can
-   target the active Spotifyd device.
+   target your Spotifyd device.
 
 Authorization Code with PKCE completes over the loopback redirect. Tokens
 created by an older build prompt for the current permission once during the

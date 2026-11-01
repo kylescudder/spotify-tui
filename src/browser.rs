@@ -40,8 +40,7 @@ pub enum BrowserEffect {
     LoadHome {
         force: bool,
     },
-    Play(String),
-    PlayTrack(CatalogPlayback),
+    Play(CatalogPlayback),
     Quit,
 }
 
@@ -309,15 +308,10 @@ impl BrowserState {
                 format!("Loading {}…", item.name()),
                 true,
             ),
-            CatalogItemKind::Track => {
+            CatalogItemKind::Track | CatalogItemKind::Playlist => {
                 let playback = item.playback();
                 self.close();
-                BrowserEffect::PlayTrack(playback)
-            }
-            CatalogItemKind::Playlist => {
-                let uri = item.uri().to_owned();
-                self.close();
-                BrowserEffect::Play(uri)
+                BrowserEffect::Play(playback)
             }
         }
     }
@@ -565,7 +559,25 @@ mod tests {
 
         assert_eq!(
             browser.apply(BrowserCommand::Activate),
-            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "track").playback())
+            BrowserEffect::Play(item(CatalogItemKind::Track, "track").playback())
+        );
+        assert_eq!(browser.mode(), BrowserMode::Closed);
+    }
+
+    #[test]
+    fn selecting_a_playlist_plays_it_through_the_catalogue() {
+        let mut browser = BrowserState::default();
+        browser.apply(BrowserCommand::OpenSearch);
+        browser.apply(BrowserCommand::Insert('x'));
+        browser.apply(BrowserCommand::Submit);
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: search_page(vec![item(CatalogItemKind::Playlist, "playlist")]),
+        });
+
+        assert_eq!(
+            browser.apply(BrowserCommand::Activate),
+            BrowserEffect::Play(item(CatalogItemKind::Playlist, "playlist").playback())
         );
         assert_eq!(browser.mode(), BrowserMode::Closed);
     }
@@ -591,7 +603,7 @@ mod tests {
 
         assert_eq!(
             browser.apply(BrowserCommand::Activate),
-            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "second").playback())
+            BrowserEffect::Play(item(CatalogItemKind::Track, "second").playback())
         );
     }
 
@@ -637,7 +649,7 @@ mod tests {
 
         assert_eq!(
             browser.apply(BrowserCommand::Activate),
-            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "track").playback())
+            BrowserEffect::Play(item(CatalogItemKind::Track, "track").playback())
         );
         assert_eq!(browser.mode(), BrowserMode::Closed);
     }
@@ -712,7 +724,7 @@ mod tests {
 
         assert_eq!(
             browser.apply(BrowserCommand::Activate),
-            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "recent").playback())
+            BrowserEffect::Play(item(CatalogItemKind::Track, "recent").playback())
         );
         assert_eq!(browser.mode(), BrowserMode::Closed);
     }
