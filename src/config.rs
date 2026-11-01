@@ -5,7 +5,7 @@ use std::{
 };
 
 use ratatui::style::Color;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use toml_edit::{DocumentMut, Item, Table, value};
 
@@ -21,6 +21,7 @@ pub struct Config {
     theme_name: String,
     theme: Theme,
     startup_uri: Option<String>,
+    home: HomeConfig,
     spotify_api: Option<SpotifyApiConfig>,
     source_path: Option<PathBuf>,
 }
@@ -31,6 +32,7 @@ impl Default for Config {
             theme_name: DEFAULT_THEME_NAME.to_owned(),
             theme: Theme::spotify(),
             startup_uri: None,
+            home: HomeConfig::default(),
             spotify_api: None,
             source_path: None,
         }
@@ -76,6 +78,10 @@ impl Config {
 
     pub fn startup_uri(&self) -> Option<&str> {
         self.startup_uri.as_deref()
+    }
+
+    pub const fn home(&self) -> &HomeConfig {
+        &self.home
     }
 
     pub const fn spotify_api(&self) -> Option<&SpotifyApiConfig> {
@@ -196,6 +202,106 @@ impl SpotifyApiConfig {
 
     pub fn token_cache(&self) -> Option<&Path> {
         self.token_cache.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HomeSectionKind {
+    RecentlyPlayed,
+    NewReleases,
+    Playlists,
+    TopArtists,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TopArtistsRange {
+    ShortTerm,
+    #[default]
+    MediumTerm,
+    LongTerm,
+}
+
+impl TopArtistsRange {
+    pub const fn as_query(self) -> &'static str {
+        match self {
+            Self::ShortTerm => "short_term",
+            Self::MediumTerm => "medium_term",
+            Self::LongTerm => "long_term",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HomeConfig {
+    open_on_startup: bool,
+    sections: Vec<HomeSectionKind>,
+    top_artists_range: TopArtistsRange,
+    new_releases_days: u32,
+    new_releases_max_artists: usize,
+}
+
+impl Default for HomeConfig {
+    fn default() -> Self {
+        Self {
+            open_on_startup: true,
+            sections: vec![
+                HomeSectionKind::RecentlyPlayed,
+                HomeSectionKind::NewReleases,
+                HomeSectionKind::Playlists,
+                HomeSectionKind::TopArtists,
+            ],
+            top_artists_range: TopArtistsRange::default(),
+            new_releases_days: 30,
+            new_releases_max_artists: 100,
+        }
+    }
+}
+
+impl HomeConfig {
+    pub const fn open_on_startup(&self) -> bool {
+        self.open_on_startup
+    }
+
+    pub fn sections(&self) -> &[HomeSectionKind] {
+        &self.sections
+    }
+
+    pub const fn top_artists_range(&self) -> TopArtistsRange {
+        self.top_artists_range
+    }
+
+    pub const fn new_releases_days(&self) -> u32 {
+        self.new_releases_days
+    }
+
+    pub const fn new_releases_max_artists(&self) -> usize {
+        self.new_releases_max_artists
+    }
+
+    fn validate(self) -> Result<Self, ConfigError> {
+        if self.new_releases_days == 0 {
+            return Err(ConfigError::InvalidHome(
+                "new_releases_days must be at least 1",
+            ));
+        }
+        if self.new_releases_max_artists == 0 {
+            return Err(ConfigError::InvalidHome(
+                "new_releases_max_artists must be at least 1",
+            ));
+        }
+        let mut seen = Vec::new();
+        for kind in &self.sections {
+            if seen.contains(kind) {
+                return Err(ConfigError::InvalidHome(
+                    "sections cannot list the same section twice",
+                ));
+            }
+            seen.push(*kind);
+        }
+        Ok(self)
     }
 }
 
@@ -335,6 +441,8 @@ pub enum ConfigError {
     },
     #[error("invalid playback.startup_uri '{0}'; use a Spotify URI beginning with spotify:")]
     InvalidStartupUri(String),
+    #[error("invalid [home] configuration: {0}")]
+    InvalidHome(&'static str),
     #[error("spotify_api.client_id cannot be empty")]
     EmptySpotifyApiClientId,
     #[error(
@@ -353,6 +461,8 @@ struct ConfigDocument {
     themes: BTreeMap<String, ThemeDefinition>,
     #[serde(default)]
     playback: PlaybackDefinition,
+    #[serde(default)]
+    home: HomeConfig,
     spotify_api: Option<SpotifyApiDefinition>,
 }
 
@@ -383,6 +493,7 @@ impl ConfigDocument {
             .ok_or_else(|| ConfigError::UnknownTheme(self.theme.clone()))?;
 
         let startup_uri = validate_startup_uri(self.playback.startup_uri)?;
+        let home = self.home.validate()?;
         let spotify_api = self
             .spotify_api
             .map(SpotifyApiDefinition::resolve)
@@ -392,6 +503,7 @@ impl ConfigDocument {
             theme_name: self.theme,
             theme,
             startup_uri,
+            home,
             spotify_api,
             source_path,
         })
@@ -654,6 +766,71 @@ startup_uri = "https://example.com/playlist"
             error,
             ConfigError::InvalidStartupUri(uri) if uri == "https://example.com/playlist"
         ));
+    }
+
+    #[test]
+    fn home_defaults_open_every_section_on_startup() {
+        let config = Config::from_toml("version = 1").expect("defaults should resolve");
+
+        assert_eq!(config.home(), &HomeConfig::default());
+        assert!(config.home().open_on_startup());
+        assert_eq!(config.home().sections().len(), 4);
+        assert_eq!(config.home().top_artists_range().as_query(), "medium_term");
+        assert_eq!(config.home().new_releases_days(), 30);
+        assert_eq!(config.home().new_releases_max_artists(), 100);
+    }
+
+    #[test]
+    fn home_sections_can_be_reordered_disabled_and_tuned() {
+        let config = Config::from_toml(
+            r#"
+version = 1
+
+[home]
+open_on_startup = false
+sections = ["new_releases", "top_artists"]
+top_artists_range = "short_term"
+new_releases_days = 14
+new_releases_max_artists = 25
+"#,
+        )
+        .expect("home options should resolve");
+
+        assert!(!config.home().open_on_startup());
+        assert_eq!(
+            config.home().sections(),
+            [HomeSectionKind::NewReleases, HomeSectionKind::TopArtists]
+        );
+        assert_eq!(config.home().top_artists_range().as_query(), "short_term");
+        assert_eq!(config.home().new_releases_days(), 14);
+        assert_eq!(config.home().new_releases_max_artists(), 25);
+    }
+
+    #[test]
+    fn rejects_home_options_that_would_silently_show_nothing() {
+        for options in [
+            "new_releases_days = 0",
+            "new_releases_max_artists = 0",
+            r#"sections = ["playlists", "playlists"]"#,
+        ] {
+            let error = Config::from_toml(&format!("version = 1\n\n[home]\n{options}\n"))
+                .expect_err("invalid home option should be rejected");
+
+            assert!(matches!(error, ConfigError::InvalidHome(_)), "{options}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_home_sections() {
+        Config::from_toml(
+            r#"
+version = 1
+
+[home]
+sections = ["made_up"]
+"#,
+        )
+        .expect_err("unknown section should be rejected");
     }
 
     #[test]

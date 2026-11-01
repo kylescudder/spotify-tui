@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fmt, io,
     sync::{
         Arc,
@@ -9,23 +10,30 @@ use std::{
     thread::JoinHandle,
 };
 
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
 use crate::{
     catalog_auth::{
-        CatalogAuthError, StoredToken, authenticate_from_tui, load_token, refresh_token,
-        spotify_agent,
+        CatalogAuthError, StoredToken, authenticate_from_tui, home_cache_path, load_token,
+        refresh_token, spotify_agent,
     },
-    config::SpotifyApiConfig,
+    config::{HomeConfig, SpotifyApiConfig, TopArtistsRange},
+    home::{HomeData, HomeRelease, HomeStep, HomeUpdate, HomeWorker, parse_release_day, unix_now},
 };
 
 const API_BASE_URL: &str = "https://api.spotify.com/v1/";
 const SEARCH_LIMIT: &str = "8";
+const RECENTLY_PLAYED_FETCH_LIMIT: &str = "50";
+const RECENTLY_PLAYED_SECTION_LIMIT: usize = 10;
+const PLAYLISTS_LIMIT: &str = "20";
+const TOP_ARTISTS_LIMIT: &str = "10";
+const FOLLOWED_ARTISTS_PAGE_LIMIT: &str = "50";
+const RELEASES_PER_GROUP: &str = "3";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CatalogItemKind {
     Artist,
     Album,
@@ -44,7 +52,7 @@ impl fmt::Display for CatalogItemKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogItem {
     kind: CatalogItemKind,
     id: String,
@@ -212,6 +220,12 @@ pub trait CatalogSource {
             "catalogue playback is unavailable".to_owned(),
         ))
     }
+
+    fn home_step(&mut self, _step: &HomeStep) -> Result<HomeData, CatalogError> {
+        Err(CatalogError::Unavailable(
+            "the catalogue home is unavailable".to_owned(),
+        ))
+    }
 }
 
 struct SpotifyCatalogSource {
@@ -263,7 +277,7 @@ impl SpotifyCatalogSource {
         let artist = artist.into_item().ok_or_else(|| {
             CatalogError::InvalidResponse("artist has no playable URI".to_owned())
         })?;
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         let releases = albums
             .items
             .into_iter()
@@ -288,6 +302,70 @@ impl SpotifyCatalogSource {
             .filter_map(|track| track.into_item(Some(&album_context)))
             .collect();
         Ok(CatalogPage::Album { album, tracks })
+    }
+
+    fn recently_played(&mut self) -> Result<HomeData, CatalogError> {
+        let mut url = api_url("me/player/recently-played")?;
+        url.query_pairs_mut()
+            .append_pair("limit", RECENTLY_PLAYED_FETCH_LIMIT);
+        let response: Page<PlayHistoryWire> = self.get_json(url)?;
+        Ok(HomeData::Items(normalize_recently_played(response)))
+    }
+
+    fn playlists(&mut self) -> Result<HomeData, CatalogError> {
+        let mut url = api_url("me/playlists")?;
+        url.query_pairs_mut().append_pair("limit", PLAYLISTS_LIMIT);
+        let response: Page<Option<PlaylistWire>> = self.get_json(url)?;
+        Ok(HomeData::Items(
+            response
+                .items
+                .into_iter()
+                .flatten()
+                .filter_map(PlaylistWire::into_item)
+                .collect(),
+        ))
+    }
+
+    fn top_artists(&mut self, range: TopArtistsRange) -> Result<HomeData, CatalogError> {
+        let mut url = api_url("me/top/artists")?;
+        url.query_pairs_mut()
+            .append_pair("limit", TOP_ARTISTS_LIMIT)
+            .append_pair("time_range", range.as_query());
+        let response: Page<ArtistWire> = self.get_json(url)?;
+        Ok(HomeData::Items(
+            response
+                .items
+                .into_iter()
+                .filter_map(ArtistWire::into_item)
+                .collect(),
+        ))
+    }
+
+    fn followed_artists(&mut self, after: Option<&str>) -> Result<HomeData, CatalogError> {
+        let mut url = api_url("me/following")?;
+        url.query_pairs_mut()
+            .append_pair("type", "artist")
+            .append_pair("limit", FOLLOWED_ARTISTS_PAGE_LIMIT);
+        if let Some(after) = after {
+            url.query_pairs_mut().append_pair("after", after);
+        }
+        let response: FollowedArtistsResponse = self.get_json(url)?;
+        Ok(normalize_followed_artists(response))
+    }
+
+    // Spotify groups a combined album,single response by type, so a small limit
+    // would hide an artist's new single behind their older albums.
+    fn artist_releases(&mut self, id: &str) -> Result<HomeData, CatalogError> {
+        let mut releases = Vec::new();
+        for group in ["album", "single"] {
+            let mut url = api_url(&format!("artists/{id}/albums"))?;
+            url.query_pairs_mut()
+                .append_pair("include_groups", group)
+                .append_pair("limit", RELEASES_PER_GROUP);
+            let albums: Page<AlbumWire> = self.get_json(url)?;
+            releases.extend(albums.items.into_iter().filter_map(AlbumWire::into_release));
+        }
+        Ok(HomeData::Releases(releases))
     }
 
     fn play(&mut self, playback: &CatalogPlayback) -> Result<(), CatalogError> {
@@ -359,6 +437,16 @@ impl CatalogSource for SpotifyCatalogSource {
     fn play(&mut self, playback: &CatalogPlayback) -> Result<(), CatalogError> {
         SpotifyCatalogSource::play(self, playback)
     }
+
+    fn home_step(&mut self, step: &HomeStep) -> Result<HomeData, CatalogError> {
+        match step {
+            HomeStep::RecentlyPlayed => self.recently_played(),
+            HomeStep::Playlists => self.playlists(),
+            HomeStep::TopArtists(range) => self.top_artists(*range),
+            HomeStep::FollowedArtists { after } => self.followed_artists(after.as_deref()),
+            HomeStep::ArtistReleases(id) => self.artist_releases(id),
+        }
+    }
 }
 
 fn request_json<T: DeserializeOwned>(
@@ -414,6 +502,7 @@ pub enum CatalogEvent {
     Failed { request_id: u64, message: String },
     PlaybackFailed { message: String },
     PlaybackFallback { playback: CatalogPlayback },
+    HomeUpdated(HomeUpdate),
 }
 
 enum RuntimeRequest {
@@ -422,6 +511,9 @@ enum RuntimeRequest {
         request: CatalogRequest,
     },
     Play(CatalogPlayback),
+    LoadHome {
+        force: bool,
+    },
     Shutdown,
 }
 
@@ -433,14 +525,16 @@ pub struct CatalogRuntime {
 }
 
 impl CatalogRuntime {
-    pub fn start(config: SpotifyApiConfig) -> io::Result<Self> {
+    pub fn start(config: SpotifyApiConfig, home: HomeConfig) -> io::Result<Self> {
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
+        let home = HomeWorker::new(home, home_cache_path(&config).ok());
         Self::start_with_factory_and_cancel(
             move || {
                 SpotifyCatalogSource::new_interactive(config.clone(), Arc::clone(&worker_cancelled))
             },
             cancelled,
+            home,
         )
     }
 
@@ -461,12 +555,17 @@ impl CatalogRuntime {
         S: CatalogSource + Send + 'static,
         F: FnMut() -> Result<S, CatalogError> + Send + 'static,
     {
-        Self::start_with_factory_and_cancel(factory, Arc::new(AtomicBool::new(false)))
+        Self::start_with_factory_and_cancel(
+            factory,
+            Arc::new(AtomicBool::new(false)),
+            HomeWorker::new(HomeConfig::default(), None),
+        )
     }
 
     fn start_with_factory_and_cancel<S, F>(
         factory: F,
         cancelled: Arc<AtomicBool>,
+        home: HomeWorker,
     ) -> io::Result<Self>
     where
         S: CatalogSource + Send + 'static,
@@ -476,7 +575,7 @@ impl CatalogRuntime {
         let (event_tx, event_rx) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("spotify-tui-catalog".to_owned())
-            .spawn(move || run_worker(factory, request_rx, &event_tx))?;
+            .spawn(move || run_worker(factory, home, request_rx, &event_tx))?;
         Ok(Self {
             request_tx,
             event_rx,
@@ -507,17 +606,55 @@ impl CatalogRuntime {
             .send(RuntimeRequest::Play(playback))
             .map_err(|_| CatalogRuntimeError)
     }
+
+    pub fn load_home(&self, force: bool) -> Result<(), CatalogRuntimeError> {
+        self.request_tx
+            .send(RuntimeRequest::LoadHome { force })
+            .map_err(|_| CatalogRuntimeError)
+    }
 }
 
 fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
     mut factory: F,
+    mut home: HomeWorker,
     request_rx: mpsc::Receiver<RuntimeRequest>,
     event_tx: &mpsc::Sender<CatalogEvent>,
 ) {
     let mut source: Option<S> = None;
-    while let Ok(mut runtime_request) = request_rx.recv() {
+    loop {
+        // Home loads one step at a time so user requests are never kept waiting
+        // for a long release scan. They share this worker, rather than having
+        // their own, because a second token owner could invalidate this one.
+        let received = if home.is_loading() {
+            request_rx.try_recv()
+        } else {
+            request_rx.recv().map_err(mpsc::TryRecvError::from)
+        };
+        let mut runtime_request = match received {
+            Ok(request) => request,
+            Err(mpsc::TryRecvError::Empty) => {
+                if !advance_home(&mut home, &mut source, &mut factory, event_tx) {
+                    return;
+                }
+                continue;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => return,
+        };
+        // A newer request only ever replaces a fetch nobody is waiting for. The
+        // worker is busy throughout a release scan, so plays and home loads queue
+        // up behind it and must survive whatever the user does next.
         while let Ok(newer) = request_rx.try_recv() {
-            runtime_request = newer;
+            let keep_running = match std::mem::replace(&mut runtime_request, newer) {
+                RuntimeRequest::Fetch { .. } => true,
+                RuntimeRequest::Play(playback) => {
+                    play_selection(playback, &mut source, &mut factory, event_tx)
+                }
+                RuntimeRequest::LoadHome { force } => begin_home(&mut home, force, event_tx),
+                RuntimeRequest::Shutdown => false,
+            };
+            if !keep_running {
+                return;
+            }
         }
         let (request_id, request) = match runtime_request {
             RuntimeRequest::Fetch {
@@ -525,41 +662,21 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
                 request,
             } => (request_id, request),
             RuntimeRequest::Play(playback) => {
-                let result = source.as_mut().map_or_else(
-                    || {
-                        Err(CatalogError::Unavailable(
-                            "catalogue is not ready".to_owned(),
-                        ))
-                    },
-                    |source| source.play(&playback),
-                );
-                let event = match result {
-                    Ok(()) => None,
-                    Err(CatalogError::PlaybackUnavailable) => {
-                        Some(CatalogEvent::PlaybackFallback { playback })
-                    }
-                    Err(error) => Some(CatalogEvent::PlaybackFailed {
-                        message: error.to_string(),
-                    }),
-                };
-                if event.is_some_and(|event| event_tx.send(event).is_err()) {
+                if !play_selection(playback, &mut source, &mut factory, event_tx) {
+                    return;
+                }
+                continue;
+            }
+            RuntimeRequest::LoadHome { force } => {
+                if !begin_home(&mut home, force, event_tx) {
                     return;
                 }
                 continue;
             }
             RuntimeRequest::Shutdown => return,
         };
-        let result = match source.as_mut() {
-            Some(source) => source.fetch(&request),
-            None => match factory() {
-                Ok(mut created) => {
-                    let result = created.fetch(&request);
-                    source = Some(created);
-                    result
-                }
-                Err(error) => Err(error),
-            },
-        };
+        let result =
+            ensure_source(&mut source, &mut factory).and_then(|source| source.fetch(&request));
         let event = match result {
             Ok(page) => CatalogEvent::Loaded { request_id, page },
             Err(error) => CatalogEvent::Failed {
@@ -571,6 +688,74 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
             return;
         }
     }
+}
+
+fn ensure_source<'a, S, F>(
+    source: &'a mut Option<S>,
+    factory: &mut F,
+) -> Result<&'a mut S, CatalogError>
+where
+    F: FnMut() -> Result<S, CatalogError>,
+{
+    if source.is_none() {
+        *source = Some(factory()?);
+    }
+    Ok(source.as_mut().expect("the source was just created"))
+}
+
+fn play_selection<S, F>(
+    playback: CatalogPlayback,
+    source: &mut Option<S>,
+    factory: &mut F,
+    event_tx: &mpsc::Sender<CatalogEvent>,
+) -> bool
+where
+    S: CatalogSource,
+    F: FnMut() -> Result<S, CatalogError>,
+{
+    // A cached home can offer playback before any request has created the source.
+    let result = ensure_source(source, factory).and_then(|source| source.play(&playback));
+    let event = match result {
+        Ok(()) => None,
+        Err(CatalogError::PlaybackUnavailable) => Some(CatalogEvent::PlaybackFallback { playback }),
+        Err(error) => Some(CatalogEvent::PlaybackFailed {
+            message: error.to_string(),
+        }),
+    };
+    event.is_none_or(|event| event_tx.send(event).is_ok())
+}
+
+fn begin_home(home: &mut HomeWorker, force: bool, event_tx: &mpsc::Sender<CatalogEvent>) -> bool {
+    send_home_updates(home.begin(force, unix_now()), event_tx)
+}
+
+fn advance_home<S, F>(
+    home: &mut HomeWorker,
+    source: &mut Option<S>,
+    factory: &mut F,
+    event_tx: &mpsc::Sender<CatalogEvent>,
+) -> bool
+where
+    S: CatalogSource,
+    F: FnMut() -> Result<S, CatalogError>,
+{
+    let Some(step) = home.next_step().cloned() else {
+        return true;
+    };
+    let updates = match ensure_source(source, factory) {
+        Ok(source) => home
+            .advance(source.home_step(&step), unix_now())
+            .into_iter()
+            .collect(),
+        Err(error) => home.abort(&error.to_string(), unix_now()),
+    };
+    send_home_updates(updates, event_tx)
+}
+
+fn send_home_updates(updates: Vec<HomeUpdate>, event_tx: &mpsc::Sender<CatalogEvent>) -> bool {
+    updates
+        .into_iter()
+        .all(|update| event_tx.send(CatalogEvent::HomeUpdated(update)).is_ok())
 }
 
 impl Drop for CatalogRuntime {
@@ -680,14 +865,30 @@ struct AlbumWire {
 
 impl AlbumWire {
     fn into_item(self) -> Option<CatalogItem> {
+        let year = self
+            .release_date
+            .as_deref()
+            .and_then(|date| date.get(..4))
+            .map(str::to_owned);
+        self.into_dated_item(year)
+    }
+
+    fn into_release(self) -> Option<HomeRelease> {
+        let date = self.release_date.clone()?;
+        let released_on = parse_release_day(&date)?;
+        Some(HomeRelease::new(
+            released_on,
+            self.into_dated_item(Some(date))?,
+        ))
+    }
+
+    fn into_dated_item(self, date: Option<String>) -> Option<CatalogItem> {
         let mut details = Vec::new();
         let artists = names(&self.artists);
         if !artists.is_empty() {
             details.push(artists);
         }
-        if let Some(year) = self.release_date.as_deref().and_then(|date| date.get(..4)) {
-            details.push(year.to_owned());
-        }
+        details.extend(date);
         Some(CatalogItem::new(
             CatalogItemKind::Album,
             self.id?,
@@ -785,6 +986,29 @@ struct NamedWire {
     name: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PlayHistoryWire {
+    track: Option<TrackWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FollowedArtistsResponse {
+    artists: FollowedArtistsPage,
+}
+
+#[derive(Debug, Deserialize)]
+struct FollowedArtistsPage {
+    #[serde(default)]
+    items: Vec<ArtistWire>,
+    next: Option<String>,
+    cursors: Option<CursorsWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CursorsWire {
+    after: Option<String>,
+}
+
 fn normalize_search(query: &str, response: SearchResponse) -> CatalogPage {
     let mut items = Vec::new();
     items.extend(
@@ -819,6 +1043,29 @@ fn normalize_search(query: &str, response: SearchResponse) -> CatalogPage {
     CatalogPage::Search {
         query: query.to_owned(),
         items,
+    }
+}
+
+fn normalize_recently_played(response: Page<PlayHistoryWire>) -> Vec<CatalogItem> {
+    let mut seen = HashSet::new();
+    response
+        .items
+        .into_iter()
+        .filter_map(|entry| entry.track?.into_item(None))
+        .filter(|track| seen.insert(track.id.clone()))
+        .take(RECENTLY_PLAYED_SECTION_LIMIT)
+        .collect()
+}
+
+fn normalize_followed_artists(response: FollowedArtistsResponse) -> HomeData {
+    let FollowedArtistsPage {
+        items,
+        next,
+        cursors,
+    } = response.artists;
+    HomeData::FollowedArtists {
+        artist_ids: items.into_iter().filter_map(|artist| artist.id).collect(),
+        after: next.and(cursors).and_then(|cursors| cursors.after),
     }
 }
 
@@ -937,6 +1184,296 @@ mod tests {
             page.prefetch_artwork_urls(1),
             vec!["https://example.com/first.jpg"]
         );
+    }
+
+    #[test]
+    fn recently_played_keeps_album_context_and_each_track_once() {
+        let response: Page<PlayHistoryWire> = serde_json::from_str(
+            r#"{
+                "items": [
+                    {"track": {"id":"track-1","uri":"spotify:track:track-1","name":"Solar","duration_ms":200000,"artists":[{"name":"Architects"}],"album":{"name":"The Sky","uri":"spotify:album:sky","images":[{"url":"https://example.com/sky.jpg"}]}},"played_at":"2026-10-31T10:00:00Z"},
+                    {"track": {"id":"track-1","uri":"spotify:track:track-1","name":"Solar","duration_ms":200000,"artists":[{"name":"Architects"}],"album":{"name":"The Sky","uri":"spotify:album:sky","images":[]}},"played_at":"2026-10-31T09:00:00Z"},
+                    {"track": null, "played_at":"2026-10-31T08:00:00Z"}
+                ]
+            }"#,
+        )
+        .expect("fixture should parse");
+
+        let items = normalize_recently_played(response);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind(), CatalogItemKind::Track);
+        assert_eq!(items[0].image_url(), Some("https://example.com/sky.jpg"));
+        assert_eq!(items[0].playback().context_uri(), Some("spotify:album:sky"));
+    }
+
+    #[test]
+    fn followed_artists_expose_a_cursor_only_while_pages_remain() {
+        let parse = |json: &str| {
+            normalize_followed_artists(serde_json::from_str(json).expect("fixture should parse"))
+        };
+
+        assert_eq!(
+            parse(
+                r#"{"artists":{"items":[{"id":"a","uri":"spotify:artist:a","name":"A"}],"next":"https://api.spotify.com/v1/me/following?after=a","cursors":{"after":"a"}}}"#
+            ),
+            HomeData::FollowedArtists {
+                artist_ids: vec!["a".to_owned()],
+                after: Some("a".to_owned()),
+            }
+        );
+        assert_eq!(
+            parse(
+                r#"{"artists":{"items":[{"id":"b","uri":"spotify:artist:b","name":"B"}],"next":null,"cursors":{"after":"b"}}}"#
+            ),
+            HomeData::FollowedArtists {
+                artist_ids: vec!["b".to_owned()],
+                after: None,
+            }
+        );
+    }
+
+    #[test]
+    fn releases_show_their_full_date_and_need_day_precision() {
+        let album = |date: &str| -> AlbumWire {
+            serde_json::from_str(&format!(
+                r#"{{"id":"album","uri":"spotify:album:album","name":"New","release_date":"{date}","artists":[{{"name":"Architects"}}],"images":[]}}"#
+            ))
+            .expect("fixture should parse")
+        };
+
+        assert_eq!(
+            album("2026-10-30").into_release(),
+            Some(HomeRelease::new(
+                20_756,
+                CatalogItem::new(
+                    CatalogItemKind::Album,
+                    "album",
+                    "spotify:album:album",
+                    "New",
+                    "Architects • 2026-10-30",
+                    None,
+                )
+            ))
+        );
+        assert_eq!(album("2026-10").into_release(), None);
+        assert_eq!(album("2026").into_release(), None);
+        assert_eq!(
+            album("2026-10-30")
+                .into_item()
+                .expect("album should normalize")
+                .detail(),
+            "Architects • 2026"
+        );
+    }
+
+    /// Answers each home step from the test thread, so a test can hold a load
+    /// open while it sends the worker user requests.
+    struct SteppedHomeSource {
+        steps: mpsc::Sender<HomeStep>,
+        answers: mpsc::Receiver<Result<HomeData, CatalogError>>,
+    }
+
+    impl CatalogSource for SteppedHomeSource {
+        fn fetch(&mut self, request: &CatalogRequest) -> Result<CatalogPage, CatalogError> {
+            let CatalogRequest::Search(query) = request else {
+                return Err(CatalogError::InvalidRequest(
+                    "unexpected request".to_owned(),
+                ));
+            };
+            Ok(CatalogPage::Search {
+                query: query.clone(),
+                items: Vec::new(),
+            })
+        }
+
+        fn home_step(&mut self, step: &HomeStep) -> Result<HomeData, CatalogError> {
+            self.steps
+                .send(step.clone())
+                .map_err(|error| CatalogError::Unavailable(error.to_string()))?;
+            self.answers
+                .recv()
+                .map_err(|error| CatalogError::Unavailable(error.to_string()))?
+        }
+    }
+
+    struct PlayingHomeSource {
+        home: SteppedHomeSource,
+        plays: mpsc::Sender<CatalogPlayback>,
+    }
+
+    impl CatalogSource for PlayingHomeSource {
+        fn fetch(&mut self, request: &CatalogRequest) -> Result<CatalogPage, CatalogError> {
+            self.home.fetch(request)
+        }
+
+        fn play(&mut self, playback: &CatalogPlayback) -> Result<(), CatalogError> {
+            self.plays
+                .send(playback.clone())
+                .map_err(|error| CatalogError::Unavailable(error.to_string()))
+        }
+
+        fn home_step(&mut self, step: &HomeStep) -> Result<HomeData, CatalogError> {
+            self.home.home_step(step)
+        }
+    }
+
+    fn stepped_runtime() -> (
+        CatalogRuntime,
+        mpsc::Receiver<HomeStep>,
+        mpsc::Sender<Result<HomeData, CatalogError>>,
+    ) {
+        let (step_tx, step_rx) = mpsc::channel();
+        let (answer_tx, answer_rx) = mpsc::channel();
+        let runtime = CatalogRuntime::start_with_source(SteppedHomeSource {
+            steps: step_tx,
+            answers: answer_rx,
+        })
+        .expect("runtime should start");
+        (runtime, step_rx, answer_tx)
+    }
+
+    #[test]
+    fn user_requests_run_between_home_steps() {
+        let (runtime, steps, answers) = stepped_runtime();
+        runtime.load_home(false).expect("load should be accepted");
+        assert_eq!(
+            steps.recv_timeout(Duration::from_secs(1)),
+            Ok(HomeStep::RecentlyPlayed)
+        );
+
+        runtime
+            .fetch(1, CatalogRequest::Search("shikari".to_owned()))
+            .expect("search should be accepted");
+        answers
+            .send(Ok(HomeData::Items(Vec::new())))
+            .expect("worker should be waiting");
+
+        assert!(matches!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::HomeUpdated(_)
+        ));
+        assert!(matches!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::Loaded { request_id: 1, .. }
+        ));
+        assert_eq!(
+            steps.recv_timeout(Duration::from_secs(1)),
+            Ok(HomeStep::Playlists)
+        );
+        answers
+            .send(Err(CatalogError::QuotaExceeded))
+            .expect("worker should be waiting");
+    }
+
+    #[test]
+    fn a_home_load_is_not_dropped_by_a_request_queued_behind_it() {
+        let (runtime, steps, answers) = stepped_runtime();
+        runtime
+            .fetch(1, CatalogRequest::Search("first".to_owned()))
+            .expect("first search should be accepted");
+        assert!(matches!(
+            receive_catalog_event(&runtime),
+            CatalogEvent::Loaded { request_id: 1, .. }
+        ));
+
+        runtime.load_home(false).expect("load should be accepted");
+        runtime
+            .fetch(2, CatalogRequest::Search("second".to_owned()))
+            .expect("second search should be accepted");
+
+        assert_eq!(
+            steps.recv_timeout(Duration::from_secs(1)),
+            Ok(HomeStep::RecentlyPlayed)
+        );
+        answers
+            .send(Err(CatalogError::QuotaExceeded))
+            .expect("worker should be waiting");
+    }
+
+    #[test]
+    fn a_cached_home_can_play_before_any_request_created_the_source() {
+        let (play_tx, play_rx) = mpsc::channel();
+        let runtime = CatalogRuntime::start_with_source(RecordingSource { plays: play_tx })
+            .expect("runtime should start");
+        let playback = CatalogItem::new(
+            CatalogItemKind::Track,
+            "track",
+            "spotify:track:track",
+            "Track",
+            "Artist • Album",
+            None,
+        )
+        .playback();
+
+        runtime
+            .play(playback.clone())
+            .expect("playback request should be accepted");
+
+        assert_eq!(play_rx.recv_timeout(Duration::from_secs(1)), Ok(playback));
+    }
+
+    #[test]
+    fn a_play_queued_behind_a_home_step_survives_the_next_request() {
+        let (step_tx, step_rx) = mpsc::channel();
+        let (answer_tx, answer_rx) = mpsc::channel();
+        let (play_tx, play_rx) = mpsc::channel();
+        let runtime = CatalogRuntime::start_with_source(PlayingHomeSource {
+            home: SteppedHomeSource {
+                steps: step_tx,
+                answers: answer_rx,
+            },
+            plays: play_tx,
+        })
+        .expect("runtime should start");
+        runtime.load_home(false).expect("load should be accepted");
+        step_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the worker should be inside a home step");
+        let playback = CatalogItem::new(
+            CatalogItemKind::Track,
+            "track",
+            "spotify:track:track",
+            "Track",
+            "Artist • Album",
+            None,
+        )
+        .playback();
+
+        runtime
+            .play(playback.clone())
+            .expect("playback request should be accepted");
+        runtime
+            .fetch(1, CatalogRequest::Search("next".to_owned()))
+            .expect("search should be accepted");
+        answer_tx
+            .send(Ok(HomeData::Items(Vec::new())))
+            .expect("worker should be waiting");
+
+        // Release the worker before asserting, because dropping the runtime joins it.
+        let played = play_rx.recv_timeout(Duration::from_secs(1));
+        drop(answer_tx);
+        assert_eq!(played, Ok(playback));
+    }
+
+    #[test]
+    fn a_source_that_cannot_start_fails_every_home_section_once() {
+        let runtime = CatalogRuntime::start_with_factory(|| -> Result<FakeSource, CatalogError> {
+            Err(CatalogError::Unavailable("sign-in required".to_owned()))
+        })
+        .expect("runtime should start");
+
+        runtime.load_home(false).expect("load should be accepted");
+
+        for _ in 0..HomeConfig::default().sections().len() {
+            assert!(matches!(
+                receive_catalog_event(&runtime),
+                CatalogEvent::HomeUpdated(HomeUpdate {
+                    status: crate::home::HomeSectionStatus::Notice(_),
+                    ..
+                })
+            ));
+        }
     }
 
     struct FakeSource;

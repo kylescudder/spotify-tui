@@ -242,9 +242,10 @@ full width to navigation instead.
 | `j` or `Down` | Lower volume by 5%. |
 | `k` or `Up` | Raise volume by 5%. |
 | `/` | Open Spotify catalogue search. |
+| `H` or `Esc` | Open Home. |
 | `a` | Leave the TUI temporarily and run Spotifyd authentication. |
 | `r` | Retry the local playback connection immediately. |
-| `q`, `Esc`, or `Ctrl-C` | Quit. |
+| `q` or `Ctrl-C` | Quit. |
 
 Inspect the current normalized MPRIS state without starting the TUI with:
 
@@ -324,6 +325,40 @@ loopback port, and an owner-local random token. Their adapters and packaging are
 implemented, but both still require live acceptance before those packages are
 called functionally complete.
 
+## Home
+
+Home opens when the TUI starts, so there is always something to pick without
+already knowing what to search for. Press `H` from any page to return to it,
+or `Esc` from the player. It has four sections:
+
+| Section | Shows |
+| --- | --- |
+| Jump back in | Your most recently played tracks. |
+| New from artists you follow | Releases from the last 30 days by the artists you follow on Spotify, newest first. |
+| Your playlists | Playlists you own or follow. |
+| Your top artists | The artists you listen to most. |
+
+- `j`/`k` or the arrow keys move through every section.
+- `Enter` opens an artist or album, or starts a selected track or playlist.
+- `Space`, `n`, and `p` control playback without leaving Home.
+- `/` searches, and `Esc` returns here from the results.
+- `Esc`, `h`, or `Left` goes to the player. `q` quits.
+- `R` fetches everything again.
+
+Sections load independently, so a failure appears under its own heading and
+never stops the others or the player. Results are cached in
+`home-cache.json` beside the Web API token for six hours, which means opening
+Home usually makes no Spotify requests. A load that fails is not cached and is
+retried after 15 minutes or when you press `R`.
+
+Spotify has no Web API for new releases from followed artists, so the section
+checks each artist in turn, using two requests per artist. That is why a full
+refresh takes a while with many followed artists: it fills in as it runs, and
+it pauses for anything you do in the meantime. If Spotify's quota is reached,
+the scan stops and keeps what it found. Discover Weekly and Daily Mixes appear
+under Your playlists only if you follow them in a Spotify client, because
+Spotify does not expose its recommendations to personal developer apps.
+
 ## First launch and catalogue search
 
 The TUI completes catalogue setup before opening the player. This prevents a
@@ -334,8 +369,8 @@ settings, and then opens Spotify's browser approval flow. The player opens only
 after the resulting token has been saved locally. If Spotify rejects a mistyped
 client ID, press `e` on the authorization screen to correct it in place.
 
-After setup, press `/`, type a query, and press `Enter`. Results include
-artists, albums, tracks, and playlists. This is also the phone-free way to
+After setup, Home opens. Press `/`, type a query, and press `Enter` to search.
+Results include artists, albums, tracks, and playlists. This is also the phone-free way to
 choose the first content in a Spotify session that has no resumable context.
 
 - `j`/`k` or the arrow keys move through results.
@@ -450,6 +485,27 @@ The value must be a Spotify URI such as `spotify:track:...`,
 opened only as part of activating Spotifyd, not every time the TUI starts while
 Spotifyd already has an active player. Leave it unset to preserve and resume
 Spotify's existing context.
+
+### Home options
+
+Home options live under `[home]`:
+
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `open_on_startup` | No | `true` | Open Home when the TUI starts. When `false`, the player opens instead and Home makes no requests until you open it. |
+| `sections` | No | All four | Sections to show, in order: `recently_played`, `new_releases`, `playlists`, `top_artists`. |
+| `top_artists_range` | No | `"medium_term"` | Period for top artists: `short_term` (about four weeks), `medium_term` (about six months), or `long_term` (about a year). |
+| `new_releases_days` | No | `30` | How many days back a release still counts as new. |
+| `new_releases_max_artists` | No | `100` | Most followed artists to check. Each one costs two requests, so lower this if you reach Spotify's quota. |
+
+```toml
+version = 1
+
+[home]
+sections = ["new_releases", "recently_played", "playlists"]
+new_releases_days = 14
+new_releases_max_artists = 50
+```
 
 ### Spotify catalogue options
 

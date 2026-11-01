@@ -1,8 +1,13 @@
-use crate::catalog::{CatalogEvent, CatalogItemKind, CatalogPage, CatalogPlayback, CatalogRequest};
+use crate::{
+    catalog::{CatalogEvent, CatalogItemKind, CatalogPage, CatalogPlayback, CatalogRequest},
+    config::HomeSectionKind,
+    home::{HomePage, HomeUpdate},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserMode {
     Closed,
+    Home,
     Editing,
     Page,
     Waiting,
@@ -11,6 +16,8 @@ pub enum BrowserMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserCommand {
     OpenSearch,
+    OpenHome,
+    RefreshHome,
     Insert(char),
     Paste(String),
     Backspace,
@@ -30,6 +37,9 @@ pub enum BrowserEffect {
         request_id: u64,
         request: CatalogRequest,
     },
+    LoadHome {
+        force: bool,
+    },
     Play(String),
     PlayTrack(CatalogPlayback),
     Quit,
@@ -38,6 +48,7 @@ pub enum BrowserEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserView {
     Closed,
+    Home,
     Editing { query: String },
     Loading { label: String },
     Page { page: CatalogPage, selected: usize },
@@ -52,6 +63,9 @@ pub struct BrowserState {
     pending_request_id: Option<u64>,
     pending_pushes_history: bool,
     fallback: Option<Box<BrowserView>>,
+    home: HomePage,
+    home_selected: usize,
+    home_is_root: bool,
 }
 
 impl Default for BrowserState {
@@ -63,18 +77,35 @@ impl Default for BrowserState {
             pending_request_id: None,
             pending_pushes_history: false,
             fallback: None,
+            home: HomePage::default(),
+            home_selected: 0,
+            home_is_root: false,
         }
     }
 }
 
 impl BrowserState {
+    pub fn set_home_sections(&mut self, sections: &[HomeSectionKind]) {
+        self.home = HomePage::new(sections);
+        self.home_selected = 0;
+    }
+
     pub const fn view(&self) -> &BrowserView {
         &self.view
+    }
+
+    pub const fn home(&self) -> &HomePage {
+        &self.home
+    }
+
+    pub const fn home_selected(&self) -> usize {
+        self.home_selected
     }
 
     pub const fn mode(&self) -> BrowserMode {
         match self.view {
             BrowserView::Closed => BrowserMode::Closed,
+            BrowserView::Home => BrowserMode::Home,
             BrowserView::Editing { .. } => BrowserMode::Editing,
             BrowserView::Page { .. } => BrowserMode::Page,
             BrowserView::Loading { .. } | BrowserView::Error { .. } => BrowserMode::Waiting,
@@ -84,6 +115,7 @@ impl BrowserState {
     pub fn artwork_url(&self) -> Option<&str> {
         match &self.view {
             BrowserView::Page { page, selected } => page.artwork_url(*selected),
+            BrowserView::Home => self.home.artwork_url(self.home_selected),
             BrowserView::Closed
             | BrowserView::Editing { .. }
             | BrowserView::Loading { .. }
@@ -94,6 +126,7 @@ impl BrowserState {
     pub fn prefetch_artwork_urls(&self) -> Vec<&str> {
         match &self.view {
             BrowserView::Page { page, selected } => page.prefetch_artwork_urls(*selected),
+            BrowserView::Home => self.home.prefetch_artwork_urls(self.home_selected),
             BrowserView::Closed
             | BrowserView::Editing { .. }
             | BrowserView::Loading { .. }
@@ -110,6 +143,20 @@ impl BrowserState {
                     query: String::new(),
                 };
                 BrowserEffect::None
+            }
+            BrowserCommand::OpenHome => {
+                self.cancel_pending();
+                self.history.clear();
+                self.home_is_root = true;
+                self.view = BrowserView::Home;
+                BrowserEffect::LoadHome { force: false }
+            }
+            BrowserCommand::RefreshHome => {
+                if !matches!(self.view, BrowserView::Home) || self.home.is_loading() {
+                    return BrowserEffect::None;
+                }
+                self.home.mark_loading();
+                BrowserEffect::LoadHome { force: true }
             }
             BrowserCommand::Insert(character) => {
                 if let BrowserView::Editing { query } = &mut self.view {
@@ -148,7 +195,7 @@ impl BrowserState {
                 BrowserEffect::None
             }
             BrowserCommand::Close => {
-                self.close();
+                self.leave();
                 BrowserEffect::None
             }
             BrowserCommand::Quit => BrowserEffect::Quit,
@@ -181,11 +228,26 @@ impl BrowserState {
                 self.view = BrowserView::Error { message };
                 self.pending_pushes_history = false;
             }
+            CatalogEvent::HomeUpdated(update) => self.apply_home_update(update),
             CatalogEvent::Loaded { .. }
             | CatalogEvent::Failed { .. }
             | CatalogEvent::PlaybackFailed { .. }
             | CatalogEvent::PlaybackFallback { .. } => {}
         }
+    }
+
+    // Sections fill in while the user browses, so the cursor follows its item
+    // rather than its index.
+    fn apply_home_update(&mut self, update: HomeUpdate) {
+        let selected_uri = self
+            .home
+            .item(self.home_selected)
+            .map(|item| item.uri().to_owned());
+        self.home.apply(update);
+        self.home_selected = selected_uri
+            .and_then(|uri| self.home.position(&uri))
+            .unwrap_or(self.home_selected)
+            .min(self.home.item_count().saturating_sub(1));
     }
 
     fn submit_search(&mut self) -> BrowserEffect {
@@ -204,6 +266,13 @@ impl BrowserState {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        if matches!(self.view, BrowserView::Home) {
+            self.home_selected = self
+                .home_selected
+                .saturating_add_signed(delta)
+                .min(self.home.item_count().saturating_sub(1));
+            return;
+        }
         let BrowserView::Page { page, selected } = &mut self.view else {
             return;
         };
@@ -218,10 +287,15 @@ impl BrowserState {
     }
 
     fn activate_selection(&mut self) -> BrowserEffect {
-        let BrowserView::Page { page, selected } = &self.view else {
-            return BrowserEffect::None;
+        let item = match &self.view {
+            BrowserView::Page { page, selected } => page.items().get(*selected).cloned(),
+            BrowserView::Home => self.home.item(self.home_selected).cloned(),
+            BrowserView::Closed
+            | BrowserView::Editing { .. }
+            | BrowserView::Loading { .. }
+            | BrowserView::Error { .. } => None,
         };
-        let Some(item) = page.items().get(*selected).cloned() else {
+        let Some(item) = item else {
             return BrowserEffect::None;
         };
         match item.kind() {
@@ -272,7 +346,7 @@ impl BrowserState {
                 if let Some(view) = self.fallback.take() {
                     self.view = *view;
                 } else {
-                    self.close();
+                    self.leave();
                 }
                 self.pending_request_id = None;
                 self.pending_pushes_history = false;
@@ -281,16 +355,28 @@ impl BrowserState {
                 if let Some((page, selected)) = self.history.pop() {
                     self.view = BrowserView::Page { page, selected };
                 } else {
-                    self.close();
+                    self.leave();
                 }
             }
-            BrowserView::Editing { .. } | BrowserView::Closed => self.close(),
+            BrowserView::Home | BrowserView::Closed => self.close(),
+            BrowserView::Editing { .. } => self.leave(),
+        }
+    }
+
+    fn leave(&mut self) {
+        if self.home_is_root {
+            self.cancel_pending();
+            self.history.clear();
+            self.view = BrowserView::Home;
+        } else {
+            self.close();
         }
     }
 
     fn close(&mut self) {
         self.cancel_pending();
         self.history.clear();
+        self.home_is_root = false;
         self.view = BrowserView::Closed;
     }
 
@@ -304,7 +390,10 @@ impl BrowserState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{CatalogItem, CatalogItemKind};
+    use crate::{
+        catalog::{CatalogItem, CatalogItemKind},
+        home::HomeSectionStatus,
+    };
 
     fn item(kind: CatalogItemKind, id: &str) -> CatalogItem {
         CatalogItem::new(
@@ -326,6 +415,32 @@ mod tests {
             kind.to_string(),
             Some(format!("https://example.com/{id}.jpg")),
         )
+    }
+
+    fn home_update(kind: HomeSectionKind, items: Vec<CatalogItem>) -> CatalogEvent {
+        CatalogEvent::HomeUpdated(HomeUpdate {
+            kind,
+            items,
+            status: HomeSectionStatus::Ready,
+        })
+    }
+
+    fn home_browser() -> BrowserState {
+        let mut browser = BrowserState::default();
+        browser.set_home_sections(&[
+            HomeSectionKind::RecentlyPlayed,
+            HomeSectionKind::NewReleases,
+        ]);
+        browser.resolve(home_update(
+            HomeSectionKind::RecentlyPlayed,
+            vec![item(CatalogItemKind::Track, "recent")],
+        ));
+        browser.resolve(home_update(
+            HomeSectionKind::NewReleases,
+            vec![item_with_artwork(CatalogItemKind::Album, "release")],
+        ));
+        browser.apply(BrowserCommand::OpenHome);
+        browser
     }
 
     fn search_page(items: Vec<CatalogItem>) -> CatalogPage {
@@ -525,6 +640,167 @@ mod tests {
             BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "track").playback())
         );
         assert_eq!(browser.mode(), BrowserMode::Closed);
+    }
+
+    #[test]
+    fn opening_home_requests_a_load_that_may_use_the_cache() {
+        let mut browser = BrowserState::default();
+
+        assert_eq!(
+            browser.apply(BrowserCommand::OpenHome),
+            BrowserEffect::LoadHome { force: false }
+        );
+        assert_eq!(browser.mode(), BrowserMode::Home);
+    }
+
+    #[test]
+    fn home_navigates_across_sections_and_previews_the_selected_artwork() {
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::Next);
+        browser.apply(BrowserCommand::Next);
+
+        assert_eq!(browser.home_selected(), 1);
+        assert_eq!(
+            browser.artwork_url(),
+            Some("https://example.com/release.jpg")
+        );
+    }
+
+    #[test]
+    fn a_home_release_opens_its_album_and_back_returns_to_home() {
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::Next);
+
+        assert_eq!(
+            browser.apply(BrowserCommand::Activate),
+            BrowserEffect::Fetch {
+                request_id: 1,
+                request: CatalogRequest::Album("release".to_owned()),
+            }
+        );
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: CatalogPage::Album {
+                album: item(CatalogItemKind::Album, "release"),
+                tracks: vec![item(CatalogItemKind::Track, "track")],
+            },
+        });
+        browser.apply(BrowserCommand::Back);
+
+        assert_eq!(browser.view(), &BrowserView::Home);
+        assert_eq!(browser.home_selected(), 1);
+    }
+
+    #[test]
+    fn a_failed_home_item_returns_to_home() {
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::Next);
+        browser.apply(BrowserCommand::Activate);
+        browser.resolve(CatalogEvent::Failed {
+            request_id: 1,
+            message: "quota".to_owned(),
+        });
+
+        browser.apply(BrowserCommand::Back);
+
+        assert_eq!(browser.view(), &BrowserView::Home);
+    }
+
+    #[test]
+    fn playing_from_home_closes_to_now_playing() {
+        let mut browser = home_browser();
+
+        assert_eq!(
+            browser.apply(BrowserCommand::Activate),
+            BrowserEffect::PlayTrack(item(CatalogItemKind::Track, "recent").playback())
+        );
+        assert_eq!(browser.mode(), BrowserMode::Closed);
+    }
+
+    #[test]
+    fn back_from_home_reaches_now_playing_and_search_returns_where_it_began() {
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::OpenSearch);
+        browser.apply(BrowserCommand::Close);
+        assert_eq!(browser.view(), &BrowserView::Home);
+
+        browser.apply(BrowserCommand::OpenSearch);
+        browser.apply(BrowserCommand::Insert('x'));
+        browser.apply(BrowserCommand::Submit);
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: search_page(Vec::new()),
+        });
+        browser.apply(BrowserCommand::Back);
+        assert_eq!(browser.view(), &BrowserView::Home);
+
+        browser.apply(BrowserCommand::Back);
+        assert_eq!(browser.mode(), BrowserMode::Closed);
+
+        browser.apply(BrowserCommand::OpenSearch);
+        browser.apply(BrowserCommand::Close);
+        assert_eq!(browser.mode(), BrowserMode::Closed);
+    }
+
+    #[test]
+    fn home_can_be_reached_from_deep_in_the_catalogue() {
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::Next);
+        browser.apply(BrowserCommand::Activate);
+
+        assert_eq!(
+            browser.apply(BrowserCommand::OpenHome),
+            BrowserEffect::LoadHome { force: false }
+        );
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: search_page(Vec::new()),
+        });
+
+        assert_eq!(browser.view(), &BrowserView::Home);
+    }
+
+    #[test]
+    fn the_cursor_stays_on_its_item_as_sections_fill_in() {
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::Next);
+
+        browser.resolve(home_update(
+            HomeSectionKind::RecentlyPlayed,
+            vec![
+                item(CatalogItemKind::Track, "new-first"),
+                item(CatalogItemKind::Track, "recent"),
+            ],
+        ));
+
+        assert_eq!(browser.home_selected(), 2);
+        assert_eq!(browser.home().item(2).map(CatalogItem::id), Some("release"));
+    }
+
+    #[test]
+    fn the_cursor_stays_in_range_when_its_item_disappears() {
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::Next);
+
+        browser.resolve(home_update(HomeSectionKind::NewReleases, Vec::new()));
+
+        assert_eq!(browser.home_selected(), 0);
+    }
+
+    #[test]
+    fn refreshing_marks_sections_and_forces_one_load() {
+        let mut browser = home_browser();
+
+        assert_eq!(
+            browser.apply(BrowserCommand::RefreshHome),
+            BrowserEffect::LoadHome { force: true }
+        );
+        assert!(browser.home().is_loading());
+        assert_eq!(browser.home().item_count(), 2);
+        assert_eq!(
+            browser.apply(BrowserCommand::RefreshHome),
+            BrowserEffect::None
+        );
     }
 
     #[test]
