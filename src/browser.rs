@@ -1,5 +1,8 @@
 use crate::{
-    catalog::{CatalogEvent, CatalogItemKind, CatalogPage, CatalogPlayback, CatalogRequest},
+    catalog::{
+        CatalogEvent, CatalogItemKind, CatalogPage, CatalogPlayback, CatalogRequest,
+        TrackDestination,
+    },
     config::HomeSectionKind,
     home::{HomePage, HomeUpdate},
 };
@@ -16,6 +19,7 @@ pub enum BrowserMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserCommand {
     OpenSearch,
+    OpenCurrent(TrackDestination),
     OpenHome,
     RefreshHome,
     Insert(char),
@@ -133,8 +137,35 @@ impl BrowserState {
         }
     }
 
+    pub fn open_current(
+        &mut self,
+        destination: TrackDestination,
+        track_id: Option<&str>,
+    ) -> BrowserEffect {
+        // Player links always return to the player, even after visiting Home.
+        self.close();
+        let effect = self.begin_request(
+            CatalogRequest::Track {
+                id: track_id.unwrap_or_default().to_owned(),
+                destination,
+            },
+            "Loading current track’s page… Spotify sign-in opens in your browser if needed."
+                .to_owned(),
+            false,
+        );
+        if track_id.is_none() {
+            self.resolve(CatalogEvent::Failed {
+                request_id: self.next_request_id,
+                message: "No Spotify track is available. Start a track, then try again.".to_owned(),
+            });
+            return BrowserEffect::None;
+        }
+        effect
+    }
+
     pub fn apply(&mut self, command: BrowserCommand) -> BrowserEffect {
         match command {
+            BrowserCommand::OpenCurrent(destination) => self.open_current(destination, None),
             BrowserCommand::OpenSearch => {
                 self.cancel_pending();
                 self.history.clear();

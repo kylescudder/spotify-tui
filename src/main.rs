@@ -384,7 +384,7 @@ fn run(
 
         let browser_mode = app.browser().mode();
         if let Some(command) = input::browser_command_for_key(key, browser_mode) {
-            match app.browser_mut().apply(command) {
+            match app.browse(command) {
                 BrowserEffect::None => {}
                 BrowserEffect::Quit => {
                     app.reduce(AppEvent::QuitRequested);

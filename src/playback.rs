@@ -82,6 +82,22 @@ pub struct TrackMetadata {
     pub art_url: Option<String>,
 }
 
+impl TrackMetadata {
+    pub fn spotify_track_id(&self) -> Option<&str> {
+        let value = self.track_id.as_deref()?;
+        let id = value
+            .strip_prefix("spotify:track:")
+            .or_else(|| {
+                value
+                    .strip_prefix("https://open.spotify.com/track/")
+                    .map(|id| id.split('?').next().unwrap_or(id))
+            })
+            .or_else(|| value.strip_prefix("/org/spotify/track/"))
+            .or_else(|| value.strip_prefix("/org/mpris/MediaPlayer2/Track/"))?;
+        (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric())).then_some(id)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackSnapshot {
     pub status: PlaybackStatus,
@@ -406,8 +422,10 @@ fn is_missing_object_error(name: &str) -> bool {
 #[cfg(target_os = "linux")]
 fn normalize_metadata(mut metadata: HashMap<String, OwnedValue>) -> TrackMetadata {
     TrackMetadata {
-        track_id: take_value::<OwnedObjectPath>(&mut metadata, "mpris:trackid")
-            .map(|path| path.to_string()),
+        track_id: take_value::<String>(&mut metadata, "xesam:url").or_else(|| {
+            take_value::<OwnedObjectPath>(&mut metadata, "mpris:trackid")
+                .map(|path| path.to_string())
+        }),
         title: take_value(&mut metadata, "xesam:title"),
         artists: take_value(&mut metadata, "xesam:artist").unwrap_or_default(),
         album: take_value(&mut metadata, "xesam:album"),
@@ -504,5 +522,39 @@ mod tests {
         assert!(!is_spotifyd_bus_name(
             "org.mpris.MediaPlayer2.spotifyd.instanceother"
         ));
+    }
+}
+
+#[cfg(test)]
+mod track_link_tests {
+    use super::*;
+
+    #[test]
+    fn track_links_support_local_control_and_mpris_metadata() {
+        for value in [
+            "spotify:track:abc123",
+            "https://open.spotify.com/track/abc123?si=test",
+            "/org/spotify/track/abc123",
+            "/org/mpris/MediaPlayer2/Track/abc123",
+        ] {
+            let track = TrackMetadata {
+                track_id: Some(value.to_owned()),
+                ..TrackMetadata::default()
+            };
+            assert_eq!(track.spotify_track_id(), Some("abc123"));
+        }
+        for value in [
+            "",
+            "spotify:episode:abc",
+            "spotify:track:",
+            "/org/mpris/MediaPlayer2/TrackList/NoTrack",
+            "spotify:track:../other",
+        ] {
+            let track = TrackMetadata {
+                track_id: Some(value.to_owned()),
+                ..TrackMetadata::default()
+            };
+            assert_eq!(track.spotify_track_id(), None);
+        }
     }
 }
