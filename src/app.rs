@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::{
     artwork::Artwork,
-    browser::BrowserState,
+    browser::{BrowserCommand, BrowserEffect, BrowserState},
     catalog::CatalogPlayback,
     playback::{PlaybackSnapshot, PlaybackStatus, TrackMetadata},
 };
@@ -188,6 +188,19 @@ impl AppState {
         &self.catalog_artwork
     }
 
+    pub fn browse(&mut self, command: BrowserCommand) -> BrowserEffect {
+        if let BrowserCommand::OpenCurrent(destination) = command {
+            let id = self
+                .playback
+                .as_ref()
+                .and_then(|playback| playback.track().spotify_track_id())
+                .map(str::to_owned);
+            self.browser.open_current(destination, id.as_deref())
+        } else {
+            self.browser.apply(command)
+        }
+    }
+
     pub const fn browser(&self) -> &BrowserState {
         &self.browser
     }
@@ -305,6 +318,109 @@ mod tests {
     use super::*;
     use crate::catalog::{CatalogItem, CatalogItemKind};
     use image::DynamicImage;
+
+    #[test]
+    fn player_links_open_exact_destinations_and_back_returns_to_player() {
+        use crate::{
+            browser::{BrowserMode, BrowserView},
+            catalog::{CatalogEvent, CatalogPage, CatalogRequest, TrackDestination},
+            input,
+        };
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (key, destination, kind) in [
+            ('b', TrackDestination::Album, CatalogItemKind::Album),
+            ('A', TrackDestination::Artist, CatalogItemKind::Artist),
+        ] {
+            let mut app = AppState::default();
+            app.browse(BrowserCommand::OpenHome);
+            app.browse(BrowserCommand::Back);
+            app.reduce(AppEvent::PlaybackUpdated {
+                snapshot: snapshot(
+                    "spotify:track:exact",
+                    PlaybackStatus::Paused,
+                    Duration::ZERO,
+                ),
+                observed_at: Instant::now(),
+            });
+            let command = input::browser_command_for_key(
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                app.browser().mode(),
+            )
+            .unwrap();
+            assert_eq!(
+                app.browse(command),
+                BrowserEffect::Fetch {
+                    request_id: 1,
+                    request: CatalogRequest::Track {
+                        id: "exact".to_owned(),
+                        destination
+                    },
+                }
+            );
+            let item = CatalogItem::new(kind, "id", "uri", "Name", "Detail", None);
+            let page = match destination {
+                TrackDestination::Album => CatalogPage::Album {
+                    album: item,
+                    tracks: vec![],
+                },
+                TrackDestination::Artist => CatalogPage::Artist {
+                    artist: item,
+                    releases: vec![],
+                },
+            };
+            app.browser_mut().resolve(CatalogEvent::Loaded {
+                request_id: 1,
+                page,
+            });
+            assert!(matches!(app.browser().view(), BrowserView::Page { .. }));
+            assert_eq!(app.playback().unwrap().status(), &PlaybackStatus::Paused);
+            app.browse(BrowserCommand::Back);
+            assert_eq!(app.browser().mode(), BrowserMode::Closed);
+        }
+    }
+
+    #[test]
+    fn player_link_failures_and_cancelled_requests_return_to_player() {
+        use crate::{
+            browser::{BrowserMode, BrowserView},
+            catalog::{CatalogEvent, CatalogPage, TrackDestination},
+        };
+        let mut app = AppState::default();
+        assert_eq!(
+            app.browse(BrowserCommand::OpenCurrent(TrackDestination::Album)),
+            BrowserEffect::None
+        );
+        assert!(matches!(app.browser().view(), BrowserView::Error { .. }));
+        app.browse(BrowserCommand::Back);
+        assert_eq!(app.browser().mode(), BrowserMode::Closed);
+        app.reduce(AppEvent::PlaybackUpdated {
+            snapshot: snapshot(
+                "spotify:track:exact",
+                PlaybackStatus::Playing,
+                Duration::ZERO,
+            ),
+            observed_at: Instant::now(),
+        });
+        app.browse(BrowserCommand::OpenCurrent(TrackDestination::Artist));
+        app.browser_mut().resolve(CatalogEvent::Failed {
+            request_id: 2,
+            message: "offline".to_owned(),
+        });
+        assert!(
+            matches!(app.browser().view(), BrowserView::Error { message } if message == "offline")
+        );
+        app.browse(BrowserCommand::Back);
+        app.browse(BrowserCommand::OpenCurrent(TrackDestination::Artist));
+        app.browse(BrowserCommand::Back);
+        app.browser_mut().resolve(CatalogEvent::Loaded {
+            request_id: 3,
+            page: CatalogPage::Search {
+                query: "late".to_owned(),
+                items: vec![],
+            },
+        });
+        assert_eq!(app.browser().mode(), BrowserMode::Closed);
+    }
 
     fn snapshot(track_id: &str, status: PlaybackStatus, position: Duration) -> PlaybackSnapshot {
         PlaybackSnapshot {

@@ -210,9 +210,19 @@ impl CatalogPage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackDestination {
+    Album,
+    Artist,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogRequest {
     Search(String),
+    Track {
+        id: String,
+        destination: TrackDestination,
+    },
     Artist(String),
     Album(String),
 }
@@ -269,6 +279,16 @@ impl SpotifyCatalogSource {
             .append_pair("limit", SEARCH_LIMIT);
         let response: SearchResponse = self.get_json(url)?;
         Ok(normalize_search(query, response))
+    }
+
+    fn track_destination(
+        &mut self,
+        id: &str,
+        destination: TrackDestination,
+    ) -> Result<CatalogPage, CatalogError> {
+        let track: TrackWire = self.get_json(api_url(&format!("tracks/{id}"))?)?;
+        let request = track.destination(destination)?;
+        self.fetch(&request)
     }
 
     fn artist(&mut self, id: &str) -> Result<CatalogPage, CatalogError> {
@@ -444,6 +464,7 @@ impl CatalogSource for SpotifyCatalogSource {
     fn fetch(&mut self, request: &CatalogRequest) -> Result<CatalogPage, CatalogError> {
         match request {
             CatalogRequest::Search(query) => self.search(query),
+            CatalogRequest::Track { id, destination } => self.track_destination(id, *destination),
             CatalogRequest::Artist(id) => self.artist(id),
             CatalogRequest::Album(id) => self.album(id),
         }
@@ -946,6 +967,26 @@ struct TrackWire {
 }
 
 impl TrackWire {
+    fn destination(&self, destination: TrackDestination) -> Result<CatalogRequest, CatalogError> {
+        let request = match destination {
+            TrackDestination::Album => self
+                .album
+                .as_ref()
+                .and_then(|album| album.id.as_ref())
+                .map(|id| CatalogRequest::Album(id.clone())),
+            TrackDestination::Artist => self
+                .artists
+                .first()
+                .and_then(|artist| artist.id.as_ref())
+                .map(|id| CatalogRequest::Artist(id.clone())),
+        };
+        request.ok_or_else(|| {
+            CatalogError::InvalidResponse(
+                "This track has no available album or artist page.".to_owned(),
+            )
+        })
+    }
+
     fn into_item(self, fallback_album: Option<&(String, String)>) -> Option<CatalogItem> {
         let mut details = Vec::new();
         let artists = names(&self.artists);
@@ -987,6 +1028,7 @@ impl TrackWire {
 
 #[derive(Debug, Deserialize)]
 struct TrackAlbumWire {
+    id: Option<String>,
     name: Option<String>,
     uri: Option<String>,
     #[serde(default)]
@@ -1017,6 +1059,7 @@ impl PlaylistWire {
 
 #[derive(Debug, Deserialize)]
 struct NamedWire {
+    id: Option<String>,
     name: Option<String>,
 }
 
@@ -1127,6 +1170,28 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn current_track_pages_use_album_and_primary_artist_ids() {
+        let track: TrackWire = serde_json::from_str(
+            r#"{
+            "album": {"id": "album-id"},
+            "artists": [{"id": "primary"}, {"id": "guest"}]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            track.destination(TrackDestination::Album).unwrap(),
+            CatalogRequest::Album("album-id".to_owned())
+        );
+        assert_eq!(
+            track.destination(TrackDestination::Artist).unwrap(),
+            CatalogRequest::Artist("primary".to_owned())
+        );
+        let missing: TrackWire = serde_json::from_str("{}").unwrap();
+        assert!(missing.destination(TrackDestination::Album).is_err());
+        assert!(missing.destination(TrackDestination::Artist).is_err());
+    }
 
     #[test]
     fn search_response_is_normalized_for_navigation_and_playback() {

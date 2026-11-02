@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crate::app::{Command, SeekDirection};
 use crate::browser::{BrowserCommand, BrowserMode};
+use crate::catalog::TrackDestination;
 
 pub fn browser_command_for_key(key: KeyEvent, mode: BrowserMode) -> Option<BrowserCommand> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -12,6 +13,16 @@ pub fn browser_command_for_key(key: KeyEvent, mode: BrowserMode) -> Option<Brows
 
     match mode {
         BrowserMode::Closed => match key.code {
+            KeyCode::Char('b') if key.modifiers.is_empty() => {
+                Some(BrowserCommand::OpenCurrent(TrackDestination::Album))
+            }
+            KeyCode::Char('A')
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(BrowserCommand::OpenCurrent(TrackDestination::Artist))
+            }
             KeyCode::Char('/') if key.modifiers.is_empty() => Some(BrowserCommand::OpenSearch),
             KeyCode::Char('H') | KeyCode::Esc => Some(BrowserCommand::OpenHome),
             _ => None,

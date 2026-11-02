@@ -242,6 +242,8 @@ full width to navigation instead.
 | `j` or `Down` | Lower volume by 5%. |
 | `k` or `Up` | Raise volume by 5%. |
 | `/` | Open Spotify catalogue search. |
+| `b` | Open the current track’s album and track list. |
+| `A` | Open the current track’s primary artist and releases. |
 | `H` or `Esc` | Open Home. |
 | `a` | Leave the TUI temporarily and run Spotifyd authentication. |
 | `r` | Retry the local playback connection immediately. |

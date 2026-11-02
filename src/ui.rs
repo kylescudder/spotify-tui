@@ -561,13 +561,13 @@ fn render_playback(
     );
 
     let help = if area.width >= 90 {
-        "/ search · H home · Space play/pause · p/n track · h/l seek · j/k volume · q quit"
+        "/ search · H home · A artist · b album · Space play/pause · p/n track · q quit"
     } else if area.width >= 70 {
-        "/ search · H home · Space play/pause · p/n track · h/l seek · q quit"
+        "/ search · A artist · b album · Space play/pause · p/n track · q quit"
     } else if area.width >= 54 {
-        "/ search · H home · Space play · p/n track · q quit"
+        "/ search · A artist · b album · Space play · q quit"
     } else {
-        "/ search · Space play · q"
+        "/ search · A artist · b album · q"
     };
     frame.render_widget(
         Paragraph::new(help)
@@ -988,10 +988,12 @@ fn render_metadata(
                 .fg(theme.accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Line::from(artists).style(Style::default().fg(theme.foreground())),
+        Line::from(format!("{artists}  [A artist]")).style(Style::default().fg(theme.foreground())),
     ];
     if !compact {
-        metadata.push(Line::from(album).style(Style::default().fg(theme.muted())));
+        metadata.push(
+            Line::from(format!("{album}  [b album]")).style(Style::default().fg(theme.muted())),
+        );
     }
     frame.render_widget(
         Paragraph::new(metadata)
@@ -1277,8 +1279,8 @@ background = "#010203"
         let text = rendered_text(&terminal);
         for expected in [
             "Live track",
-            "Artist",
-            "Album",
+            "[A artist]",
+            "[b album]",
             "0:12 / 3:00",
             "75%",
             "play/pause",
