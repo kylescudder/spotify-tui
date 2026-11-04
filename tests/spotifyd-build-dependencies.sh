@@ -10,6 +10,9 @@ mkdir "$fixture_dir/bin"
 # Isolate the system source-list operations; exercise the real APT invocation.
 cat >"$fixture_dir/bin/sed" <<'MOCK'
 #!/bin/sh
+case "$*" in
+  *snapshot-cloudflare.debian.org*) : >"$APT_FALLBACK" ;;
+esac
 exit 0
 MOCK
 cat >"$fixture_dir/bin/grep" <<'MOCK'
@@ -34,12 +37,19 @@ case " $* " in
       echo 'Unable to locate package libasound2-dev' >&2
       exit 100
     fi
+    if [ "$APT_SCENARIO" = package-outage ] || {
+      [ "$APT_SCENARIO" = fallback ] && [ ! -f "$APT_FALLBACK" ];
+    }; then
+      echo 'Failed to fetch libpulse-dev: 504 Gateway Timeout' >&2
+      exit 100
+    fi
     ;;
   *) exit 2 ;;
 esac
 MOCK
 chmod +x "$fixture_dir/bin/"*
 
+export APT_FALLBACK="$fixture_dir/fallback"
 export APT_CALLS="$fixture_dir/apt-calls"
 export APT_SCENARIO=outage
 if PATH="$fixture_dir/bin:$PATH" sh "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
@@ -60,4 +70,27 @@ grep ' update$' "$APT_CALLS" | grep -q 'Acquire::Check-Valid-Until=false'
 grep ' update$' "$APT_CALLS" | grep -q 'Acquire::Retries=5'
 grep -E '(^| )install ' "$APT_CALLS" | grep -q 'Acquire::Retries=5'
 grep -E '(^| )install ' "$APT_CALLS" | grep -q 'libasound2-dev libdbus-1-dev libpulse-dev'
+# An exhausted package download must switch frontends and repeat index validation.
+export APT_SCENARIO=fallback
+rm -f "$APT_FALLBACK"
+: >"$APT_CALLS"
+if ! PATH="$fixture_dir/bin:$PATH" sh "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
+  echo 'package download failure must try the alternate snapshot frontend' >&2
+  cat "$fixture_dir/output" >&2
+  exit 1
+fi
+[ -f "$APT_FALLBACK" ]
+[ "$(grep -c ' update$' "$APT_CALLS")" = 2 ]
+[ "$(grep -Ec '(^| )install ' "$APT_CALLS")" = 2 ]
+
+# Failure on both frontends must remain a failure, with no unbounded retry loop.
+export APT_SCENARIO=package-outage
+rm -f "$APT_FALLBACK"
+: >"$APT_CALLS"
+if PATH="$fixture_dir/bin:$PATH" sh "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
+  echo 'package download failure on both frontends must fail' >&2
+  exit 1
+fi
+[ -f "$APT_FALLBACK" ]
+[ "$(grep -Ec '(^| )install ' "$APT_CALLS")" = 2 ]
 echo 'Spotifyd build dependency tests passed'
