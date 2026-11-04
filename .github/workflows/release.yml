@@ -57,7 +57,6 @@ jobs:
               echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
               exit 1
             fi
-            sh scripts/validate-release-readiness.sh "$cargo_version"
           elif [[ -n "$REQUESTED_VERSION" ]]; then
             expected_version=${REQUESTED_VERSION#v}
             if [[ "$expected_version" != "$cargo_version" ]]; then

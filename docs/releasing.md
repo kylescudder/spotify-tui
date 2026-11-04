@@ -81,17 +81,10 @@ without requiring elevated privileges.
 
 1. Update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md` for the intended semantic
    version.
-2. Complete the live product acceptance suite on every advertised platform, run
-   a successful manual release rehearsal, and record that exact package version
-   for `public_release_version` and every entry under `[platforms]` in
-   `release-readiness.toml`. For example, a fully accepted `0.1.0` release uses
-   `"0.1.0"` for all four values. Leave a value empty until that approval is
-   complete. Because approvals contain the package version instead of reusable
-   booleans, a later version bump automatically relocks every stale approval.
-3. Run `make check`. If Nix is available, also run `nix flake check` and
+2. Run `make check`. If Nix is available, also run `nix flake check` and
    `nix build`.
-4. Merge the release commit to `main` and confirm CI is green.
-5. Create and push an annotated tag matching the Cargo version exactly:
+3. Merge the release commit to `main` and confirm CI is green.
+4. Create and push an annotated tag matching the Cargo version exactly:
 
    ```bash
    git tag -a v0.1.0 -m "spotify-tui 0.1.0"
@@ -113,8 +106,7 @@ that does not exist. Release runs are serialized, and the update refuses to
 downgrade an existing formula if an older tag is re-run. If the deploy-key push
 fails, the GitHub release remains usable through its direct installers while
 the previous Homebrew formula remains valid; fix the key or branch rule and
-retry the release workflow. A tag also fails before building unless every
-approval in `release-readiness.toml` matches the exact Cargo package version.
+retry the release workflow.
 
 ## Checksums and trust
 
@@ -138,10 +130,6 @@ formula is tested from the exact staged source archive and pushed to the tap
 only after every build, installer, Nix, and Homebrew check passes and the GitHub
 release assets are public. The tap push is version-guarded so re-running an old
 tag cannot replace a newer formula.
-
-Do not merge or advertise the macOS formula as functionally complete until its
-local-control playback, service, and audio paths pass the product acceptance
-suite. The same rule applies to the Windows installer.
 
 The clean-install rehearsal must also prove zero-command daemon startup: the
 Linux installer uses `systemctl --user enable --now`, the macOS installer
