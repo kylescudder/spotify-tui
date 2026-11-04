@@ -366,6 +366,7 @@ mod tests {
                 TrackDestination::Artist => CatalogPage::Artist {
                     artist: item,
                     releases: vec![],
+                    following: false,
                 },
             };
             app.browser_mut().resolve(CatalogEvent::Loaded {

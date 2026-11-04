@@ -22,6 +22,7 @@ pub enum BrowserCommand {
     OpenCurrent(TrackDestination),
     OpenHome,
     RefreshHome,
+    ToggleArtistFollow,
     Insert(char),
     Paste(String),
     Backspace,
@@ -36,6 +37,10 @@ pub enum BrowserCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserEffect {
+    FollowArtist {
+        id: String,
+        following: bool,
+    },
     None,
     Fetch {
         request_id: u64,
@@ -69,6 +74,8 @@ pub struct BrowserState {
     home: HomePage,
     home_selected: usize,
     home_is_root: bool,
+    pending_follow: Option<String>,
+    follow_error: Option<(String, String)>,
 }
 
 impl Default for BrowserState {
@@ -83,6 +90,8 @@ impl Default for BrowserState {
             home: HomePage::default(),
             home_selected: 0,
             home_is_root: false,
+            pending_follow: None,
+            follow_error: None,
         }
     }
 }
@@ -91,6 +100,32 @@ impl BrowserState {
     pub fn set_home_sections(&mut self, sections: &[HomeSectionKind]) {
         self.home = HomePage::new(sections);
         self.home_selected = 0;
+    }
+
+    pub fn artist_follow_label(&self) -> Option<String> {
+        let BrowserView::Page {
+            page: CatalogPage::Artist {
+                artist, following, ..
+            },
+            ..
+        } = &self.view
+        else {
+            return None;
+        };
+        if self.pending_follow.as_deref() == Some(artist.id()) {
+            return Some("Updating follow status…".to_owned());
+        }
+        let action = if *following {
+            "Following · f Unfollow"
+        } else {
+            "f Follow"
+        };
+        if let Some((id, error)) = &self.follow_error
+            && id == artist.id()
+        {
+            return Some(format!("{action} · {error}"));
+        }
+        Some(action.to_owned())
     }
 
     pub const fn view(&self) -> &BrowserView {
@@ -165,6 +200,28 @@ impl BrowserState {
 
     pub fn apply(&mut self, command: BrowserCommand) -> BrowserEffect {
         match command {
+            BrowserCommand::ToggleArtistFollow => {
+                let BrowserView::Page {
+                    page:
+                        CatalogPage::Artist {
+                            artist, following, ..
+                        },
+                    ..
+                } = &self.view
+                else {
+                    return BrowserEffect::None;
+                };
+                if self.pending_follow.is_some() {
+                    return BrowserEffect::None;
+                }
+                let id = artist.id().to_owned();
+                self.pending_follow = Some(id.clone());
+                self.follow_error = None;
+                BrowserEffect::FollowArtist {
+                    id,
+                    following: !following,
+                }
+            }
             BrowserCommand::OpenCurrent(destination) => self.open_current(destination, None),
             BrowserCommand::OpenSearch => {
                 self.cancel_pending();
@@ -234,6 +291,39 @@ impl BrowserState {
 
     pub fn resolve(&mut self, event: CatalogEvent) {
         match event {
+            CatalogEvent::ArtistFollowUpdated { id, result } => {
+                if self.pending_follow.as_deref() != Some(&id) {
+                    return;
+                }
+                self.pending_follow = None;
+                match result {
+                    Ok(following) => {
+                        let update = |page: &mut CatalogPage| {
+                            if let CatalogPage::Artist {
+                                artist,
+                                following: value,
+                                ..
+                            } = page
+                                && artist.id() == id
+                            {
+                                *value = following;
+                            }
+                        };
+                        if let BrowserView::Page { page, .. } = &mut self.view {
+                            update(page);
+                        }
+                        if let Some(view) = &mut self.fallback
+                            && let BrowserView::Page { page, .. } = view.as_mut()
+                        {
+                            update(page);
+                        }
+                        for (page, _) in &mut self.history {
+                            update(page);
+                        }
+                    }
+                    Err(message) => self.follow_error = Some((id, message)),
+                }
+            }
             CatalogEvent::Loaded { request_id, page }
                 if self.pending_request_id == Some(request_id) =>
             {
@@ -420,6 +510,118 @@ mod tests {
         home::HomeSectionStatus,
     };
 
+    fn artist_browser() -> BrowserState {
+        BrowserState {
+            view: BrowserView::Page {
+                page: CatalogPage::Artist {
+                    artist: item(CatalogItemKind::Artist, "artist"),
+                    releases: vec![
+                        item(CatalogItemKind::Album, "first"),
+                        item(CatalogItemKind::Album, "second"),
+                    ],
+                    following: false,
+                },
+                selected: 1,
+            },
+            ..BrowserState::default()
+        }
+    }
+
+    #[test]
+    fn follow_and_unfollow_wait_for_confirmation_and_preserve_selection() {
+        let mut browser = artist_browser();
+        for following in [true, false] {
+            assert_eq!(
+                browser.apply(BrowserCommand::ToggleArtistFollow),
+                BrowserEffect::FollowArtist {
+                    id: "artist".to_owned(),
+                    following,
+                }
+            );
+            assert_eq!(
+                browser.artist_follow_label().as_deref(),
+                Some("Updating follow status…")
+            );
+            assert_eq!(
+                browser.apply(BrowserCommand::ToggleArtistFollow),
+                BrowserEffect::None
+            );
+            assert!(matches!(browser.view(), BrowserView::Page {
+                page: CatalogPage::Artist { following: value, .. }, selected: 1,
+            } if *value != following));
+            browser.resolve(CatalogEvent::ArtistFollowUpdated {
+                id: "artist".to_owned(),
+                result: Ok(following),
+            });
+            assert!(matches!(browser.view(), BrowserView::Page {
+                page: CatalogPage::Artist { following: value, .. }, selected: 1,
+            } if *value == following));
+        }
+    }
+
+    #[test]
+    fn follow_failure_keeps_status_and_allows_retry() {
+        let mut browser = artist_browser();
+        browser.apply(BrowserCommand::ToggleArtistFollow);
+        browser.resolve(CatalogEvent::ArtistFollowUpdated {
+            id: "artist".to_owned(),
+            result: Err("quota exceeded".to_owned()),
+        });
+        assert!(
+            browser
+                .artist_follow_label()
+                .unwrap()
+                .contains("f Follow · quota exceeded")
+        );
+        assert!(matches!(
+            browser.apply(BrowserCommand::ToggleArtistFollow),
+            BrowserEffect::FollowArtist {
+                following: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn follow_completion_updates_history_without_reopening_artist() {
+        let mut browser = artist_browser();
+        browser.apply(BrowserCommand::ToggleArtistFollow);
+        browser.apply(BrowserCommand::Activate);
+        browser.resolve(CatalogEvent::ArtistFollowUpdated {
+            id: "artist".to_owned(),
+            result: Ok(true),
+        });
+        browser.resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: CatalogPage::Album {
+                album: item(CatalogItemKind::Album, "second"),
+                tracks: vec![],
+            },
+        });
+        assert!(matches!(
+            browser.view(),
+            BrowserView::Page {
+                page: CatalogPage::Album { .. },
+                ..
+            }
+        ));
+        assert_eq!(
+            browser.apply(BrowserCommand::ToggleArtistFollow),
+            BrowserEffect::None
+        );
+        browser.apply(BrowserCommand::Back);
+        assert!(matches!(
+            browser.view(),
+            BrowserView::Page {
+                page: CatalogPage::Artist {
+                    following: true,
+                    ..
+                },
+                selected: 1
+            }
+        ));
+    }
+
     fn item(kind: CatalogItemKind, id: &str) -> CatalogItem {
         CatalogItem::new(
             kind,
@@ -529,6 +731,7 @@ mod tests {
             request_id: 2,
             page: CatalogPage::Artist {
                 artist: item(CatalogItemKind::Artist, "artist"),
+                following: false,
                 releases: vec![item(CatalogItemKind::Album, "album")],
             },
         });
@@ -557,6 +760,7 @@ mod tests {
             request_id: 2,
             page: CatalogPage::Artist {
                 artist: item_with_artwork(CatalogItemKind::Artist, "artist"),
+                following: false,
                 releases: vec![
                     item_with_artwork(CatalogItemKind::Album, "first"),
                     item_with_artwork(CatalogItemKind::Album, "second"),
@@ -660,6 +864,7 @@ mod tests {
             request_id: 2,
             page: CatalogPage::Artist {
                 artist: item(CatalogItemKind::Artist, "artist"),
+                following: false,
                 releases: vec![item(CatalogItemKind::Album, "album")],
             },
         });

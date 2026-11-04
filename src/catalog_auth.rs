@@ -23,8 +23,8 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPIRY_MARGIN: Duration = Duration::from_secs(30);
 const AUTHORIZATION_SCOPES: &str = "user-modify-playback-state user-read-recently-played \
-    user-top-read user-follow-read playlist-read-private";
-const AUTHORIZATION_VERSION: u32 = 3;
+    user-top-read user-follow-read user-follow-modify playlist-read-private";
+const AUTHORIZATION_VERSION: u32 = 4;
 const HOME_CACHE_FILE: &str = "home-cache.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,7 +619,7 @@ token_cache = {token_cache:?}
             parameters.get("scope").map(|value| value.as_ref()),
             Some(
                 "user-modify-playback-state user-read-recently-played user-top-read \
-                 user-follow-read playlist-read-private"
+                 user-follow-read user-follow-modify playlist-read-private"
             )
         );
         assert!(!parameters.contains_key("client_secret"));
@@ -717,7 +717,7 @@ token_cache = {token_cache:?}
     }
 
     #[test]
-    fn tokens_from_before_the_home_scopes_require_a_new_sign_in() {
+    fn tokens_without_artist_follow_permission_require_a_new_sign_in() {
         let unique = NEXT_TOKEN_PATH.fetch_add(1, Ordering::Relaxed);
         let path = env::temp_dir().join(format!(
             "spotify-tui-outdated-scope-token-{}-{unique}.json",
@@ -728,7 +728,7 @@ token_cache = {token_cache:?}
             access_token: "access".to_owned(),
             refresh_token: "refresh".to_owned(),
             expires_at: u64::MAX,
-            authorization_version: 2,
+            authorization_version: 3,
             client_id: config.client_id().to_owned(),
         };
 

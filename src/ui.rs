@@ -394,7 +394,7 @@ pub fn render(
         render_browser(
             frame,
             inner,
-            state.browser().view(),
+            state.browser(),
             state.catalog_artwork(),
             theme,
             artwork_renderer,
@@ -743,12 +743,12 @@ fn catalog_highlight_style(theme: &Theme) -> Style {
 fn render_browser(
     frame: &mut Frame,
     area: Rect,
-    view: &BrowserView,
+    browser: &crate::browser::BrowserState,
     artwork: &ArtworkState,
     theme: &Theme,
     artwork_renderer: &mut ArtworkRenderer,
 ) {
-    match view {
+    match browser.view() {
         BrowserView::Closed | BrowserView::Home => {}
         BrowserView::Editing { query } => render_search_editor(frame, area, query, theme),
         BrowserView::Loading { label } => {
@@ -781,7 +781,7 @@ fn render_browser(
                 ])
                 .margin(1)
                 .split(area);
-            let heading = Text::from(vec![
+            let mut heading = Text::from(vec![
                 Line::from(page.title()).style(
                     Style::default()
                         .fg(theme.accent())
@@ -789,6 +789,11 @@ fn render_browser(
                 ),
                 Line::from(page.subtitle()).style(Style::default().fg(theme.muted())),
             ]);
+            if let Some(label) = browser.artist_follow_label() {
+                heading
+                    .lines
+                    .push(Line::from(label).style(Style::default().fg(theme.accent())));
+            }
             frame.render_widget(Paragraph::new(heading).wrap(Wrap { trim: true }), layout[0]);
 
             let list_area = catalog_list_area(
@@ -1544,6 +1549,56 @@ background = "#010203"
         assert!(text.contains("Search Spotify"));
         assert!(text.contains("> enter shikari█"));
         assert!(text.contains("Enter search"));
+    }
+
+    #[test]
+    fn artist_page_renders_follow_pending_unfollow_and_error_at_common_widths() {
+        let mut state = AppState::default();
+        state
+            .browser_mut()
+            .open_current(crate::catalog::TrackDestination::Artist, Some("track"));
+        state.browser_mut().resolve(CatalogEvent::Loaded {
+            request_id: 1,
+            page: CatalogPage::Artist {
+                artist: CatalogItem::new(
+                    CatalogItemKind::Artist,
+                    "artist",
+                    "spotify:artist:artist",
+                    "Test Artist",
+                    "Artist",
+                    None,
+                ),
+                releases: vec![],
+                following: false,
+            },
+        });
+        for (width, height) in [(60, 20), (80, 24), (120, 30)] {
+            let text = render_to_text(&state, width, height);
+            assert!(text.contains("Test Artist"));
+            assert!(text.contains("f Follow"));
+        }
+        state
+            .browser_mut()
+            .apply(BrowserCommand::ToggleArtistFollow);
+        assert!(render_to_text(&state, 80, 24).contains("Updating follow status"));
+        state
+            .browser_mut()
+            .resolve(CatalogEvent::ArtistFollowUpdated {
+                id: "artist".to_owned(),
+                result: Ok(true),
+            });
+        assert!(render_to_text(&state, 80, 24).contains("Following · f Unfollow"));
+        state
+            .browser_mut()
+            .apply(BrowserCommand::ToggleArtistFollow);
+        state
+            .browser_mut()
+            .resolve(CatalogEvent::ArtistFollowUpdated {
+                id: "artist".to_owned(),
+                result: Err("Request failed".to_owned()),
+            });
+        let text = render_to_text(&state, 80, 24);
+        assert!(text.contains("Following · f Unfollow · Request failed"));
     }
 
     #[test]
