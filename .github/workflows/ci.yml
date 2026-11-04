@@ -201,6 +201,9 @@ jobs:
             "$formula"
           sh scripts/validate-homebrew-formula.sh "$formula"
 
+      - name: Test Spotifyd build dependency installation
+        run: sh tests/spotifyd-build-dependencies.sh
+
       - name: Test release safety gates
         run: sh tests/release-safety.sh
 

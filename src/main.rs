@@ -385,6 +385,15 @@ fn run(
         let browser_mode = app.browser().mode();
         if let Some(command) = input::browser_command_for_key(key, browser_mode) {
             match app.browse(command) {
+                BrowserEffect::FollowArtist { id, following } => {
+                    if let Err(error) = services.catalog.follow_artist(id.clone(), following) {
+                        app.browser_mut()
+                            .resolve(CatalogEvent::ArtistFollowUpdated {
+                                id,
+                                result: Err(error.to_string()),
+                            });
+                    }
+                }
                 BrowserEffect::None => {}
                 BrowserEffect::Quit => {
                     app.reduce(AppEvent::QuitRequested);
@@ -591,7 +600,8 @@ fn drain_catalog_events(app: &mut AppState, services: &RuntimeServices<'_>) {
                     PlaybackCommand::OpenUri(playback.uri().to_owned()),
                 );
             }
-            event @ (CatalogEvent::Loaded { .. }
+            event @ (CatalogEvent::ArtistFollowUpdated { .. }
+            | CatalogEvent::Loaded { .. }
             | CatalogEvent::Failed { .. }
             | CatalogEvent::HomeUpdated(_)) => {
                 app.browser_mut().resolve(event);

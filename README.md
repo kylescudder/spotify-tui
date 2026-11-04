@@ -380,8 +380,11 @@ choose the first content in a Spotify session that has no resumable context.
 - `Esc`, `h`, or `Left` returns to the previous page.
 - `/` starts a new search and `q` quits.
 
-An artist page shows the artist's album and single releases. Its artwork preview
-follows the selected release, falling back to the artist image when a release
+An artist page shows the artist's album and single releases. Press `f` to follow
+or unfollow the artist; the heading shows the current status and available action.
+Existing users are asked to sign in once more to grant follow permission.
+
+The artwork preview follows the selected release, falling back to the artist image when a release
 has no cover. Opening a release shows its tracks. Selecting a track asks Spotify
 to start that exact URI on your Spotifyd device, retaining its album as the
 playback context, and playlists start the same way. Naming the device means a

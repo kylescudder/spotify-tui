@@ -150,6 +150,7 @@ pub enum CatalogPage {
     Artist {
         artist: CatalogItem,
         releases: Vec<CatalogItem>,
+        following: bool,
     },
     Album {
         album: CatalogItem,
@@ -187,7 +188,9 @@ impl CatalogPage {
     pub fn artwork_url(&self, selected: usize) -> Option<&str> {
         match self {
             Self::Search { items, .. } => items.get(selected).and_then(CatalogItem::image_url),
-            Self::Artist { artist, releases } => releases
+            Self::Artist {
+                artist, releases, ..
+            } => releases
                 .get(selected)
                 .and_then(CatalogItem::image_url)
                 .or_else(|| artist.image_url()),
@@ -233,6 +236,12 @@ pub trait CatalogSource {
     fn play(&mut self, _playback: &CatalogPlayback) -> Result<(), CatalogError> {
         Err(CatalogError::Unavailable(
             "catalogue playback is unavailable".to_owned(),
+        ))
+    }
+
+    fn follow_artist(&mut self, _id: &str, _following: bool) -> Result<(), CatalogError> {
+        Err(CatalogError::Unavailable(
+            "artist following is unavailable".to_owned(),
         ))
     }
 
@@ -309,7 +318,19 @@ impl SpotifyCatalogSource {
             .filter_map(AlbumWire::into_item)
             .filter(|album| seen.insert(album.id.clone()))
             .collect();
-        Ok(CatalogPage::Artist { artist, releases })
+        let mut url = api_url("me/following/contains")?;
+        url.query_pairs_mut()
+            .append_pair("type", "artist")
+            .append_pair("ids", id);
+        let following: Vec<bool> = self.get_json(url)?;
+        let following = following.first().copied().ok_or_else(|| {
+            CatalogError::InvalidResponse("artist follow status is missing".to_owned())
+        })?;
+        Ok(CatalogPage::Artist {
+            artist,
+            releases,
+            following,
+        })
     }
 
     fn album(&mut self, id: &str) -> Result<CatalogPage, CatalogError> {
@@ -474,6 +495,21 @@ impl CatalogSource for SpotifyCatalogSource {
         SpotifyCatalogSource::play(self, playback)
     }
 
+    fn follow_artist(&mut self, id: &str, following: bool) -> Result<(), CatalogError> {
+        if self.token.needs_refresh() {
+            self.refresh_or_authenticate()?;
+        }
+        let url = artist_follow_url(id)?;
+        match request_artist_follow(&self.agent, &url, following, self.token.access_token()) {
+            Err(ureq::Error::StatusCode(401)) => {
+                self.refresh_or_authenticate()?;
+                request_artist_follow(&self.agent, &url, following, self.token.access_token())
+                    .map_err(CatalogError::from_http)
+            }
+            result => result.map_err(CatalogError::from_http),
+        }
+    }
+
     fn home_step(&mut self, step: &HomeStep) -> Result<HomeData, CatalogError> {
         match step {
             HomeStep::RecentlyPlayed => self.recently_played(),
@@ -483,6 +519,35 @@ impl CatalogSource for SpotifyCatalogSource {
             HomeStep::ArtistReleases(id) => self.artist_releases(id),
         }
     }
+}
+
+fn artist_follow_url(id: &str) -> Result<Url, CatalogError> {
+    let mut url = api_url("me/following")?;
+    url.query_pairs_mut()
+        .append_pair("type", "artist")
+        .append_pair("ids", id);
+    Ok(url)
+}
+
+fn request_artist_follow(
+    agent: &ureq::Agent,
+    url: &Url,
+    following: bool,
+    access_token: &str,
+) -> Result<(), ureq::Error> {
+    let authorization = format!("Bearer {access_token}");
+    if following {
+        agent
+            .put(url.as_str())
+            .header("Authorization", authorization)
+            .send_empty()?;
+    } else {
+        agent
+            .delete(url.as_str())
+            .header("Authorization", authorization)
+            .call()?;
+    }
+    Ok(())
 }
 
 fn request_json<T: DeserializeOwned>(
@@ -553,14 +618,32 @@ fn api_url(path: &str) -> Result<Url, CatalogError> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogEvent {
-    Loaded { request_id: u64, page: CatalogPage },
-    Failed { request_id: u64, message: String },
-    PlaybackFailed { message: String },
-    PlaybackFallback { playback: CatalogPlayback },
+    ArtistFollowUpdated {
+        id: String,
+        result: Result<bool, String>,
+    },
+    Loaded {
+        request_id: u64,
+        page: CatalogPage,
+    },
+    Failed {
+        request_id: u64,
+        message: String,
+    },
+    PlaybackFailed {
+        message: String,
+    },
+    PlaybackFallback {
+        playback: CatalogPlayback,
+    },
     HomeUpdated(HomeUpdate),
 }
 
 enum RuntimeRequest {
+    FollowArtist {
+        id: String,
+        following: bool,
+    },
     Fetch {
         request_id: u64,
         request: CatalogRequest,
@@ -652,6 +735,12 @@ impl CatalogRuntime {
             .map_err(|_| CatalogRuntimeError)
     }
 
+    pub fn follow_artist(&self, id: String, following: bool) -> Result<(), CatalogRuntimeError> {
+        self.request_tx
+            .send(RuntimeRequest::FollowArtist { id, following })
+            .map_err(|_| CatalogRuntimeError)
+    }
+
     pub fn try_event(&self) -> Option<CatalogEvent> {
         self.event_rx.try_recv().ok()
     }
@@ -701,6 +790,9 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
         while let Ok(newer) = request_rx.try_recv() {
             let keep_running = match std::mem::replace(&mut runtime_request, newer) {
                 RuntimeRequest::Fetch { .. } => true,
+                RuntimeRequest::FollowArtist { id, following } => {
+                    follow_artist(id, following, &mut source, &mut factory, event_tx)
+                }
                 RuntimeRequest::Play(playback) => {
                     play_selection(playback, &mut source, &mut factory, event_tx)
                 }
@@ -724,6 +816,12 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
             }
             RuntimeRequest::LoadHome { force } => {
                 if !begin_home(&mut home, force, event_tx) {
+                    return;
+                }
+                continue;
+            }
+            RuntimeRequest::FollowArtist { id, following } => {
+                if !follow_artist(id, following, &mut source, &mut factory, event_tx) {
                     return;
                 }
                 continue;
@@ -756,6 +854,22 @@ where
         *source = Some(factory()?);
     }
     Ok(source.as_mut().expect("the source was just created"))
+}
+
+fn follow_artist<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
+    id: String,
+    following: bool,
+    source: &mut Option<S>,
+    factory: &mut F,
+    event_tx: &mpsc::Sender<CatalogEvent>,
+) -> bool {
+    let result = ensure_source(source, factory)
+        .and_then(|source| source.follow_artist(&id, following))
+        .map(|()| following)
+        .map_err(|error| error.to_string());
+    event_tx
+        .send(CatalogEvent::ArtistFollowUpdated { id, result })
+        .is_ok()
 }
 
 fn play_selection<S, F>(
@@ -1273,6 +1387,7 @@ mod tests {
         let page = CatalogPage::Artist {
             artist,
             releases: vec![first_album, selected_album],
+            following: false,
         };
 
         assert_eq!(
@@ -1573,6 +1688,112 @@ mod tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn artist_follow_http_uses_put_delete_and_accepts_empty_responses() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = artist_follow_url("artist-id").unwrap();
+        let local_url = Url::parse(&format!(
+            "http://{address}{}?{}",
+            url.path(),
+            url.query().unwrap()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            for method in ["PUT", "DELETE"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(
+                    line.trim(),
+                    format!("{method} /v1/me/following?type=artist&ids=artist-id HTTP/1.1")
+                );
+                let mut authorized = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if line
+                        .to_ascii_lowercase()
+                        .starts_with("authorization: bearer test-token")
+                    {
+                        authorized = true;
+                    }
+                }
+                assert!(authorized);
+                stream
+                    .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+            }
+        });
+        let agent = ureq::Agent::new_with_defaults();
+        request_artist_follow(&agent, &local_url, true, "test-token").unwrap();
+        request_artist_follow(&agent, &local_url, false, "test-token").unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn queued_artist_follow_writes_survive_fetch_coalescing() {
+        struct FollowSource;
+        impl CatalogSource for FollowSource {
+            fn fetch(&mut self, _: &CatalogRequest) -> Result<CatalogPage, CatalogError> {
+                panic!("superseded fetches must be discarded")
+            }
+            fn follow_artist(&mut self, id: &str, following: bool) -> Result<(), CatalogError> {
+                assert_eq!(id, "artist");
+                if following {
+                    Ok(())
+                } else {
+                    Err(CatalogError::QuotaExceeded)
+                }
+            }
+        }
+        let (request_tx, request_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        for following in [true, false] {
+            request_tx
+                .send(RuntimeRequest::FollowArtist {
+                    id: "artist".to_owned(),
+                    following,
+                })
+                .unwrap();
+            request_tx
+                .send(RuntimeRequest::Fetch {
+                    request_id: 1,
+                    request: CatalogRequest::Search("superseded".to_owned()),
+                })
+                .unwrap();
+        }
+        request_tx.send(RuntimeRequest::Shutdown).unwrap();
+        run_worker(
+            || Ok(FollowSource),
+            HomeWorker::new(HomeConfig::default(), None),
+            request_rx,
+            &event_tx,
+        );
+        assert_eq!(
+            event_rx.try_recv().unwrap(),
+            CatalogEvent::ArtistFollowUpdated {
+                id: "artist".to_owned(),
+                result: Ok(true)
+            }
+        );
+        assert_eq!(
+            event_rx.try_recv().unwrap(),
+            CatalogEvent::ArtistFollowUpdated {
+                id: "artist".to_owned(),
+                result: Err(CatalogError::QuotaExceeded.to_string())
+            }
+        );
+        assert!(event_rx.try_recv().is_err());
     }
 
     struct FakeSource;

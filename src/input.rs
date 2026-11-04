@@ -51,6 +51,9 @@ pub fn browser_command_for_key(key: KeyEvent, mode: BrowserMode) -> Option<Brows
             _ => None,
         },
         BrowserMode::Page => match key.code {
+            KeyCode::Char('f') if key.modifiers.is_empty() => {
+                Some(BrowserCommand::ToggleArtistFollow)
+            }
             KeyCode::Char('q') => Some(BrowserCommand::Quit),
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => Some(BrowserCommand::Back),
             KeyCode::Char('/') => Some(BrowserCommand::OpenSearch),
@@ -104,6 +107,21 @@ pub fn command_for_key(key: KeyEvent) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artist_follow_shortcut_only_applies_to_pages() {
+        let key = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(
+            browser_command_for_key(key, BrowserMode::Page),
+            Some(BrowserCommand::ToggleArtistFollow)
+        );
+        assert_eq!(browser_command_for_key(key, BrowserMode::Home), None);
+        assert_eq!(browser_command_for_key(key, BrowserMode::Closed), None);
+        assert_eq!(
+            browser_command_for_key(key, BrowserMode::Editing),
+            Some(BrowserCommand::Insert('f'))
+        );
+    }
 
     #[test]
     fn quit_keys_map_to_quit_command() {
