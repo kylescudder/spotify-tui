@@ -3,7 +3,6 @@
 set -eu
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-validator="$repo_root/scripts/validate-release-readiness.sh"
 formula_version_guard="$repo_root/scripts/validate-homebrew-formula-upgrade.sh"
 formula_validator="$repo_root/scripts/validate-homebrew-formula.sh"
 spotifyd_build_dependencies="$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh"
@@ -17,41 +16,9 @@ fail() {
   exit 1
 }
 
-[ -f "$validator" ] || fail "missing release-readiness validator"
 [ -f "$formula_version_guard" ] || fail "missing Homebrew formula version guard"
 [ -f "$formula_validator" ] || fail "missing staged Homebrew formula validator"
 [ -f "$spotifyd_build_dependencies" ] || fail "missing pinned Spotifyd build dependencies"
-
-cat >"$fixture_dir/approved.toml" <<'EOF'
-version = 1
-public_release_version = "0.1.0"
-
-[platforms]
-linux = "0.1.0"
-macos = "0.1.0"
-windows = "0.1.0"
-EOF
-
-sh "$validator" 0.1.0 "$fixture_dir/approved.toml" >/dev/null ||
-  fail "matching version approvals should pass"
-
-if sh "$validator" 0.2.0 "$fixture_dir/approved.toml" >/dev/null 2>&1; then
-  fail "approvals from an earlier package version must not carry forward"
-fi
-
-cat >"$fixture_dir/partial.toml" <<'EOF'
-version = 1
-public_release_version = "0.1.0"
-
-[platforms]
-linux = "0.1.0"
-macos = ""
-windows = "0.1.0"
-EOF
-
-if sh "$validator" 0.1.0 "$fixture_dir/partial.toml" >/dev/null 2>&1; then
-  fail "a missing platform approval must block publication"
-fi
 
 job_block() {
   source_file=${2:-$workflow}

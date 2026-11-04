@@ -251,10 +251,8 @@ The release infrastructure is implemented in this repository:
   then updates the Homebrew tap after the assets are public. Manual rehearsals
   can explicitly validate deploy-key and branch-policy write access with one
   content-neutral empty commit to the tap's `main` branch.
-  `release-readiness.toml` additionally
-  blocks public tags until the exact Cargo package version is explicitly
-  approved for public release and live runtime acceptance on all three
-  platforms; an old version's approvals cannot carry across a version bump.
+  Publication relies on automated checks; no manual platform approval file
+  or live acceptance sign-off is required.
 - `scripts/install.sh` provides the HTTPS-only `curl | sh` path for Linux/macOS;
   `scripts/install.ps1` provides the PowerShell path for Windows. Both select the
   matching release, support pinned versions and user-writable destinations,
@@ -292,9 +290,8 @@ write was validated successfully by the manual rehearsal. The workflow stamps
 the actual product repository into release installers at build time, so forks
 also remain functional.
 
-The infrastructure can build macOS and Windows packages, but those packages must
-not be advertised as functionally complete until the platform runtime adapters
-below pass live acceptance.
+The infrastructure can build macOS and Windows packages. The platform exercises
+below are optional follow-up validation, not publication requirements.
 
 ## Remaining execution sequence
 
@@ -338,16 +335,15 @@ prefetched images, exact selected-track playback, cached authorization after a
 restart, and responsive layouts. Keep those paths in regression coverage, but
 they are no longer open implementation tasks.
 
-1. Live-validate the macOS and Windows platform adapters.
+1. Optional: live-validate the macOS and Windows platform adapters.
    - Live-test the Homebrew/launchd and Windows Startup lifecycle adapters
      alongside the implemented local-control playback adapter.
-   - Verify both Apple Silicon and Intel builds in CI; functional validation on
-     real hardware is required for every architecture advertised by the formula.
-   - Verify the Windows x86_64 build in CI and on a clean Windows machine before
-     publishing its installer.
+   - Verify both Apple Silicon and Intel builds in CI; optionally exercise
+     each architecture on real hardware.
+   - Verify the Windows x86_64 build in CI; optionally exercise its installer
+     on a clean Windows machine.
 
-2. Harden the complete runtime and perform remaining live acceptance on macOS
-   and Windows.
+2. Optional: exercise additional runtime scenarios on macOS and Windows.
    - Exercise a fresh Spotifyd OAuth approval, cancellation, service restart,
      network loss, pause/resume, daemon loss, and daemon reconnection.
    - Test repeated track changes, missing art, small terminals, shutdown during

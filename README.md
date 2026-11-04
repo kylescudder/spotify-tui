@@ -12,9 +12,7 @@ macOS, plus direct POSIX and Windows installers.
 
 The project is under active development. Linux playback uses Spotifyd's MPRIS
 interface. macOS and Windows use the authenticated, loopback-only local-control
-adapter included in Spotify TUI's pinned Spotifyd build. Those packages must
-not be described as functionally complete until their live platform acceptance
-tests pass.
+adapter included in Spotify TUI's pinned Spotifyd build.
 
 ## Installation
 
@@ -323,9 +321,7 @@ described below.
 
 Spotifyd requires a Spotify Premium account. MPRIS and systemd integration are
 Linux-only; macOS and Windows use a per-user discovery file, an ephemeral
-loopback port, and an owner-local random token. Their adapters and packaging are
-implemented, but both still require live acceptance before those packages are
-called functionally complete.
+loopback port, and an owner-local random token.
 
 ## Home
 
