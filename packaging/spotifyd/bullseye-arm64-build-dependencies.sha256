@@ -1,0 +1,22 @@
+# Debian bullseye/main ARM64 snapshot: 20250724T000000Z
+# SHA256 and Filename from the signed snapshot package index.
+f62042c919add90ded0b25d4dc743debf169f2cf1ba9dacf9c4c03df708b56d8  pool/main/a/alsa-topology-conf/alsa-topology-conf_1.2.4-1_all.deb
+8ebc647f10dc050cc24f6e0abf27dff22e9ce70fd3c8856be303a8158e53a388  pool/main/a/alsa-ucm-conf/alsa-ucm-conf_1.2.4-2_all.deb
+2f59563756d4411563a5ef01b510db37cd5e1c5e917708746f3ae0fe7bd9c7bb  pool/main/d/dbus/dbus_1.12.28-0+deb11u1_arm64.deb
+b1341ca28d7f0e1176145f5d108e235b3a9843b066e2e76f306bc57942266e9b  pool/main/a/apparmor/libapparmor1_2.13.6-10_arm64.deb
+8fabd77256593c42e2ad1578f938b56d0a5ed19aa61c6c72c890fd761fd129a8  pool/main/a/alsa-lib/libasound2_1.2.4-1.1_arm64.deb
+76211f5f201ad1069b95d047863e0c1b51d8400c874b59e00f24f31f972b4036  pool/main/a/alsa-lib/libasound2-data_1.2.4-1.1_all.deb
+5acd1f3cd1aa11aeeb9dcd2467e8142ced0bdf112b813d134e63baebf342ee29  pool/main/a/alsa-lib/libasound2-dev_1.2.4-1.1_arm64.deb
+1988ed1b9d48baae39a5ca37416579a8422e687e11df18b540fa28247868935f  pool/main/liba/libasyncns/libasyncns0_0.8-6+b2_arm64.deb
+f1bb373a6f82d709b27b183aa36a393de5e7144a0dc1985656e47f76a8118e81  pool/main/d/dbus/libdbus-1-3_1.12.28-0+deb11u1_arm64.deb
+eb34b1e5874c6b9ab9cfaf106c06fc44a02f50dac4d965cfb4bbc0c067888014  pool/main/d/dbus/libdbus-1-dev_1.12.28-0+deb11u1_arm64.deb
+c2c9d8e5addeed1d70841255db0af5b099e000da153baeae3656b4f5e4b801d5  pool/main/f/flac/libflac8_1.3.3-2+deb11u2_arm64.deb
+910d1f3893a9340ea83bf19deebbc4e0d2362f22c274c2c2d3f00e4ba386c871  pool/main/libo/libogg/libogg0_1.3.4-0.1_arm64.deb
+86d96e6e99820be150e4e1d335cf8503c5802a3ac47103ba25eebf77a0699a13  pool/main/o/opus/libopus0_1.3.1-0.1_arm64.deb
+a83746a514f457d515fec31e34fcd985728eaeae77560bbd5e11496fef3f6058  pool/main/p/pulseaudio/libpulse-dev_14.2-2_arm64.deb
+3e1f369cdeabef2e0d0dfbb8862e81043858346add6f9693a70008edd92d9809  pool/main/p/pulseaudio/libpulse-mainloop-glib0_14.2-2_arm64.deb
+bb6533d2f67cd7fb94bf2ae1d7f13ae6b3c5b70c098038f21bc47fce30c88621  pool/main/p/pulseaudio/libpulse0_14.2-2_arm64.deb
+35cd1ede25dda91abdfd23bc02fbfe9afc72e2a11178bebcc5ef76601a2a60b7  pool/main/libs/libsndfile/libsndfile1_1.0.31-2_arm64.deb
+2f902ae456bcada7b0d494d7bd7c994feb81c4158209d8a12c0b2d9e255edda7  pool/main/libv/libvorbis/libvorbis0a_1.3.7-1_arm64.deb
+f1089e220c81e267caec859bf2e440bb78ed9f318bbb51cfd6c85d35bf80144b  pool/main/libv/libvorbis/libvorbisenc2_1.3.7-1_arm64.deb
+8e57d2f27eea81a61ea144e8c0b8301c3ab4a6195dc2366c2c703d49b7b79e7d  pool/main/t/tcp-wrappers/libwrap0_7.6.q-31_arm64.deb

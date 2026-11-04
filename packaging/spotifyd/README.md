@@ -32,3 +32,27 @@ pin, reapply the patch to a clean checkout, compile the `local_control` feature,
 run its test, and repeat native macOS and Windows acceptance. Modified Spotifyd
 binaries remain GPL-3.0-only; releases publish the pinned complete upstream
 source and include this patch as corresponding source.
+
+## ARM64 Linux build dependencies
+
+The CI and release jobs build in the digest-pinned Rust 1.88.0 Bullseye image
+specified in their workflows. `bullseye-arm64-build-dependencies.sha256` locks
+the additional Debian packages needed for ALSA, PulseAudio, and D-Bus. Binutils
+and pkg-config are already present in that image.
+
+`scripts/install-spotifyd-bullseye-build-dependencies.sh` downloads those exact
+package files from Debian's regular pool, falling back to its archive pool,
+checks every SHA-256 hash, then installs the complete set with `dpkg`. Installation
+requires no package indexes and cannot fetch additional dependencies. This avoids
+the snapshot service's index and package redirect outages while retaining the
+versions from the `20250724T000000Z` snapshot.
+
+To update the lock, obtain `dists/bullseye/InRelease` and
+`dists/bullseye/main/binary-arm64/Packages.xz` from the intended Debian snapshot.
+Verify the InRelease signatures with `gpgv` and the pinned image's Debian archive
+keyring, then verify the compressed index's SHA-256 against that signed release.
+Copy each required package's `SHA256` and `Filename` fields into the lock. Review
+the complete dependency set against a clean instance of the pinned ARM64 image.
+When changing the base image or snapshot, repeat this process and verify installation
+with `/var/lib/apt/lists` empty, build the pinned Spotifyd source, and run
+`scripts/validate-spotifyd-linux-runtime.sh` with `SPOTIFY_TUI_MAX_GLIBC=2.31`.

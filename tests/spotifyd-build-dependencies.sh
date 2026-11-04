@@ -5,92 +5,81 @@ set -eu
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT HUP INT TERM
-mkdir "$fixture_dir/bin"
-
-# Isolate the system source-list operations; exercise the real APT invocation.
-cat >"$fixture_dir/bin/sed" <<'MOCK'
+mkdir -p "$fixture_dir/bin" "$fixture_dir/scripts" "$fixture_dir/packaging/spotifyd" "$fixture_dir/packages"
+cp "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh" "$fixture_dir/scripts/"
+# Exercise the real download/checksum/install code with small locked artifacts.
+printf '# Fixture package lock\n' >"$fixture_dir/packaging/spotifyd/bullseye-arm64-build-dependencies.sha256"
+for package in first second; do
+  printf '%s package\n' "$package" >"$fixture_dir/packages/$package.deb"
+  checksum=$(shasum -a 256 "$fixture_dir/packages/$package.deb" | cut -d ' ' -f 1)
+  printf '%s  pool/main/test/%s.deb\n' "$checksum" "$package" \
+    >>"$fixture_dir/packaging/spotifyd/bullseye-arm64-build-dependencies.sha256"
+done
+cat >"$fixture_dir/bin/curl" <<'MOCK'
 #!/bin/sh
-case "$*" in
-  *snapshot-cloudflare.debian.org*) : >"$APT_FALLBACK" ;;
-esac
-exit 0
-MOCK
-cat >"$fixture_dir/bin/grep" <<'MOCK'
-#!/bin/sh
-exit 1
-MOCK
-cat >"$fixture_dir/bin/apt-get" <<'MOCK'
-#!/bin/sh
-printf '%s\n' "$*" >>"$APT_CALLS"
-case " $* " in
-  *' update '*)
-    if [ "$APT_SCENARIO" = outage ]; then
-      echo 'Failed to fetch snapshot index: 504 Gateway Timeout' >&2
-      case " $* " in
-        *' APT::Update::Error-Mode=any '*) exit 100 ;;
-        *) exit 0 ;;
-      esac
-    fi
-    ;;
-  *' install '*)
-    if [ "$APT_SCENARIO" = outage ]; then
-      echo 'Unable to locate package libasound2-dev' >&2
-      exit 100
-    fi
-    if [ "$APT_SCENARIO" = package-outage ] || {
-      [ "$APT_SCENARIO" = fallback ] && [ ! -f "$APT_FALLBACK" ];
-    }; then
-      echo 'Failed to fetch libpulse-dev: 504 Gateway Timeout' >&2
-      exit 100
-    fi
-    ;;
-  *) exit 2 ;;
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) output=$2; shift 2 ;;
+    https:*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' "$url" >>"$DEPENDENCY_CALLS"
+case "$DEPENDENCY_SCENARIO:$url" in
+  unavailable:*|fallback:https://deb.debian.org/*) exit 22 ;;
+  corrupt:*|corrupt-primary:https://deb.debian.org/*) echo 'corrupt package' >"$output" ;;
+  *) cp "$DEPENDENCY_PACKAGES/${url##*/}" "$output" ;;
 esac
 MOCK
+cat >"$fixture_dir/bin/dpkg" <<'MOCK'
+#!/bin/sh
+if [ "$1" = --print-architecture ]; then
+  echo "${DEPENDENCY_ARCH:-arm64}"
+  exit 0
+fi
+[ "$1" = --install ] && [ "$#" = 3 ] || exit 1
+printf 'install\n' >>"$DEPENDENCY_CALLS"
+[ "$DEPENDENCY_SCENARIO" != install-failure ]
+MOCK
+for tool in pkg-config readelf; do
+  printf '#!/bin/sh\nexit 0\n' >"$fixture_dir/bin/$tool"
+done
+# macOS and Linux must exercise an actual checksum implementation.
+printf '#!/bin/sh\nexec shasum -a 256 "$@"\n' >"$fixture_dir/bin/sha256sum"
 chmod +x "$fixture_dir/bin/"*
+export DEPENDENCY_PACKAGES="$fixture_dir/packages"
+export DEPENDENCY_CALLS="$fixture_dir/calls"
 
-export APT_FALLBACK="$fixture_dir/fallback"
-export APT_CALLS="$fixture_dir/apt-calls"
-export APT_SCENARIO=outage
-if PATH="$fixture_dir/bin:$PATH" sh "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
-  echo 'index download failure must fail dependency installation' >&2
-  exit 1
-fi
-if grep -Eq '(^| )install ' "$APT_CALLS"; then
-  echo 'must not install packages after snapshot index download failure' >&2
-  cat "$fixture_dir/output" >&2
-  exit 1
-fi
+for scenario in success fallback corrupt-primary; do
+  export DEPENDENCY_SCENARIO=$scenario
+  : >"$DEPENDENCY_CALLS"
+  PATH="$fixture_dir/bin:$PATH" sh "$fixture_dir/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1
+  [ "$(grep -c '^install$' "$DEPENDENCY_CALLS")" = 1 ]
+  if [ "$scenario" = success ]; then
+    [ "$(wc -l <"$DEPENDENCY_CALLS" | tr -d ' ')" = 3 ]
+  else
+    [ "$(grep -c '^https://archive.debian.org/' "$DEPENDENCY_CALLS")" = 2 ]
+  fi
+done
 
-export APT_SCENARIO=success
-: >"$APT_CALLS"
-PATH="$fixture_dir/bin:$PATH" sh "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh"
-[ "$(wc -l <"$APT_CALLS" | tr -d ' ')" = 2 ]
-grep ' update$' "$APT_CALLS" | grep -q 'Acquire::Check-Valid-Until=false'
-grep ' update$' "$APT_CALLS" | grep -q 'Acquire::Retries=5'
-grep -E '(^| )install ' "$APT_CALLS" | grep -q 'Acquire::Retries=5'
-grep -E '(^| )install ' "$APT_CALLS" | grep -q 'libasound2-dev libdbus-1-dev libpulse-dev'
-# An exhausted package download must switch frontends and repeat index validation.
-export APT_SCENARIO=fallback
-rm -f "$APT_FALLBACK"
-: >"$APT_CALLS"
-if ! PATH="$fixture_dir/bin:$PATH" sh "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
-  echo 'package download failure must try the alternate snapshot frontend' >&2
-  cat "$fixture_dir/output" >&2
-  exit 1
-fi
-[ -f "$APT_FALLBACK" ]
-[ "$(grep -c ' update$' "$APT_CALLS")" = 2 ]
-[ "$(grep -Ec '(^| )install ' "$APT_CALLS")" = 2 ]
+for scenario in unavailable corrupt install-failure; do
+  export DEPENDENCY_SCENARIO=$scenario
+  : >"$DEPENDENCY_CALLS"
+  if PATH="$fixture_dir/bin:$PATH" sh "$fixture_dir/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
+    echo "locked dependency installation must reject $scenario" >&2
+    exit 1
+  fi
+  if [ "$scenario" != install-failure ] && grep -q '^install$' "$DEPENDENCY_CALLS"; then
+    echo 'unavailable or corrupt packages must never reach dpkg' >&2
+    exit 1
+  fi
+done
 
-# Failure on both frontends must remain a failure, with no unbounded retry loop.
-export APT_SCENARIO=package-outage
-rm -f "$APT_FALLBACK"
-: >"$APT_CALLS"
-if PATH="$fixture_dir/bin:$PATH" sh "$repo_root/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
-  echo 'package download failure on both frontends must fail' >&2
+export DEPENDENCY_ARCH=amd64
+: >"$DEPENDENCY_CALLS"
+if PATH="$fixture_dir/bin:$PATH" sh "$fixture_dir/scripts/install-spotifyd-bullseye-build-dependencies.sh" >"$fixture_dir/output" 2>&1; then
+  echo 'ARM64 dependency lock must reject another architecture' >&2
   exit 1
 fi
-[ -f "$APT_FALLBACK" ]
-[ "$(grep -Ec '(^| )install ' "$APT_CALLS")" = 2 ]
+[ ! -s "$DEPENDENCY_CALLS" ]
 echo 'Spotifyd build dependency tests passed'
