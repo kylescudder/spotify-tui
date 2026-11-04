@@ -18,8 +18,11 @@ if grep -Eq 'deb\.debian\.org|security\.debian\.org' "$sources"; then
   exit 1
 fi
 
-apt-get -o Acquire::Check-Valid-Until=false update
-DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+# Snapshot downloads can return transient 503/504 errors. Retry both index and
+# package downloads, and never continue with an incomplete package index.
+apt-get -o Acquire::Retries=5 -o Acquire::Check-Valid-Until=false \
+  -o APT::Update::Error-Mode=any update
+DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install --yes \
   binutils \
   libasound2-dev \
   libdbus-1-dev \
