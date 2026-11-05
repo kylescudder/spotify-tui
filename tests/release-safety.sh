@@ -50,6 +50,8 @@ matrix_entry() {
 publish_job=$(job_block publish)
 
 # Publishing downloads artifacts without checking out a Git repository.
+# The shell variable is intentionally matched literally in the workflow source.
+# shellcheck disable=SC2016
 printf '%s\n' "$publish_job" |
   grep -Fq -- '--repo "$GITHUB_REPOSITORY"' ||
   fail "artifact-only publishing must pass an explicit repository to gh"
