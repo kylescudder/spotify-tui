@@ -25,9 +25,9 @@ every release path before publishing anything.
 5. Enable GitHub artifact attestations for the repository. The release job uses
    GitHub's OIDC token and needs no long-lived signing key.
 
-All third-party actions are pinned to full commit SHAs. Dependabot proposes
-Cargo and Actions updates weekly; review action-source changes before accepting
-a new SHA.
+All third-party actions are pinned to full commit SHAs. Renovate uses the shared
+`config:recommended` baseline with a limit of five PRs per hour; review
+action-source changes before accepting a new SHA.
 
 ## Rehearse a release
 
