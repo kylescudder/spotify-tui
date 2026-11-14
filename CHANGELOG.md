@@ -5,6 +5,31 @@ uses semantic versioning once public releases begin.
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-14
+
+- A queue view, opened with `v` from the player, Home, or a catalogue page.
+  `j`/`k` select, `d`/`Delete` removes, `J`/`K` reorder, `c` then `y` clears
+  manually added tracks, and `R` refreshes. Edits keep automatic context
+  tracks, current playback, and history.
+- `Q` on Home and catalogue pages queues the selected track or album on
+  Spotifyd without interrupting playback.
+- Queue edits are checked against a revision inside Spotifyd's event loop, so
+  an edit is rejected instead of changing the wrong track after another client
+  modifies the queue. A failed or timed-out edit requires a refresh first.
+- The macOS and Windows Spotifyd runtimes and the Homebrew formula now include
+  a checksum-verified librespot-connect 0.8.0 patch that adds queue editing to
+  local control. Stock Linux/MPRIS runtimes and older runtimes show a read-only
+  queue with upgrade instructions.
+- Reading the queue needs the `user-read-playback-state` Spotify permission,
+  so existing users are asked to authorize catalogue access once more.
+- Opening the current track's album or artist page now works with Spotifyd's
+  `/spotify/track/<id>` MPRIS paths.
+- Release publishing names the repository explicitly, so the artifact-only
+  publishing job no longer fails while inferring it from Git.
+- Dependency updates now come from Renovate instead of Dependabot.
+
+## 0.1.0 - 2026-11-05
+
 - Initial Ratatui application and deterministic playback state model.
 - Phone-free Linux startup through Spotifyd's local D-Bus transfer control,
   including automatic recovery after daemon restarts and an optional configured
