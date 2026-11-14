@@ -92,6 +92,8 @@ impl TrackMetadata {
                     .strip_prefix("https://open.spotify.com/track/")
                     .map(|id| id.split('?').next().unwrap_or(id))
             })
+            // Spotifyd maps spotify:track:<id> to this D-Bus object path.
+            .or_else(|| value.strip_prefix("/spotify/track/"))
             .or_else(|| value.strip_prefix("/org/spotify/track/"))
             .or_else(|| value.strip_prefix("/org/mpris/MediaPlayer2/Track/"))?;
         (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric())).then_some(id)
@@ -534,6 +536,7 @@ mod track_link_tests {
         for value in [
             "spotify:track:abc123",
             "https://open.spotify.com/track/abc123?si=test",
+            "/spotify/track/abc123",
             "/org/spotify/track/abc123",
             "/org/mpris/MediaPlayer2/Track/abc123",
         ] {
@@ -549,6 +552,10 @@ mod track_link_tests {
             "spotify:track:",
             "/org/mpris/MediaPlayer2/TrackList/NoTrack",
             "spotify:track:../other",
+            "/spotify/episode/abc123",
+            "/spotify/local/abc123",
+            "/spotify/track/",
+            "/spotify/track/../other",
         ] {
             let track = TrackMetadata {
                 track_id: Some(value.to_owned()),

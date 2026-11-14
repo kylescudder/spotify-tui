@@ -320,6 +320,49 @@ mod tests {
     use image::DynamicImage;
 
     #[test]
+    fn player_links_accept_spotifyd_mpris_track_paths() {
+        use crate::{
+            browser::BrowserView,
+            catalog::{CatalogRequest, TrackDestination},
+            input,
+        };
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for (key, destination) in [
+            ('b', TrackDestination::Album),
+            ('A', TrackDestination::Artist),
+        ] {
+            let mut app = AppState::default();
+            app.reduce(AppEvent::PlaybackUpdated {
+                snapshot: snapshot(
+                    "/spotify/track/4cOdK2wGLETKBW3PvgPWqT",
+                    PlaybackStatus::Playing,
+                    Duration::ZERO,
+                ),
+                observed_at: Instant::now(),
+            });
+            let command = input::browser_command_for_key(
+                KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE),
+                app.browser().mode(),
+            )
+            .unwrap();
+
+            assert_eq!(
+                app.browse(command),
+                BrowserEffect::Fetch {
+                    request_id: 1,
+                    request: CatalogRequest::Track {
+                        id: "4cOdK2wGLETKBW3PvgPWqT".to_owned(),
+                        destination,
+                    },
+                },
+                "{key} should open the current track's page instead of the no-track error"
+            );
+            assert!(matches!(app.browser().view(), BrowserView::Loading { .. }));
+        }
+    }
+
+    #[test]
     fn player_links_open_exact_destinations_and_back_returns_to_player() {
         use crate::{
             browser::{BrowserMode, BrowserView},
