@@ -10,3 +10,9 @@ Spotify TUI source archive under `packaging/spotifyd`.
 
 Spotifyd source and project information:
 https://github.com/Spotifyd/spotifyd/tree/v0.4.2
+
+The local queue-control extension patches librespot-connect 0.8.0 (MIT).
+Its original source is published as `librespot-connect-0.8.0-source.crate` beside
+each release. The checksum, patch, and added module are in `packaging/spotifyd`;
+`apply-local-control.sh` reconstructs the modified source without changing
+upstream dependency versions.

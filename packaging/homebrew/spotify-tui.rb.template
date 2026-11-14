@@ -16,12 +16,19 @@ class SpotifyTui < Formula
     sha256 "d711e441d709e76f93b4ab297782d01dee6aa166e4015746fd5230d61fcaba71"
   end
 
+  resource "librespot-connect" do
+    url "https://static.crates.io/crates/librespot-connect/librespot-connect-0.8.0.crate", using: :nounzip
+    sha256 "4b2a21e9e19b906c6676b1a515fc5529d5414f69049f5a167dfb2ea3206e5a27"
+  end
+
   def install
     system "cargo", "install", *std_cargo_args(path: ".")
     pkgshare.install "themes"
 
+    resource("librespot-connect").stage(buildpath/"librespot-connect-source")
     resource("spotifyd").stage do
-      system "sh", buildpath/"packaging/spotifyd/apply-local-control.sh", "."
+      system "sh", buildpath/"packaging/spotifyd/apply-local-control.sh", ".",
+             buildpath/"librespot-connect-source/librespot-connect-0.8.0.crate"
       system "cargo", "install", "--locked", "--root", buildpath/"spotifyd-install",
              "--path", ".", "--no-default-features", "--features", "rodio_backend,local_control"
     end

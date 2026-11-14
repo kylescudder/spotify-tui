@@ -15,7 +15,7 @@ addresses are ignored, request and response I/O is bounded, and token comparison
 does not short-circuit over equal-length values.
 
 The request operations are `snapshot`, `activate`, `toggle`, `previous`, `next`,
-`seek_by`, `set_volume`, and `open_uri`. `src/local_control.rs` in the Spotify
+`seek_by`, `set_volume`, `open_uri`, and `queue`. `src/local_control.rs` in the Spotify
 TUI source is the matching client and owns conversion into the platform-neutral
 `PlaybackSource` model. It rereads endpoint discovery for every request so a
 Spotifyd restart and new ephemeral port recover without restarting the TUI.
@@ -56,3 +56,42 @@ the complete dependency set against a clean instance of the pinned ARM64 image.
 When changing the base image or snapshot, repeat this process and verify installation
 with `/var/lib/apt/lists` empty, build the pinned Spotifyd source, and run
 `scripts/validate-spotifyd-linux-runtime.sh` with `SPOTIFY_TUI_MAX_GLIBC=2.31`.
+
+## Queue control extension
+
+`apply-local-control.sh` also downloads the checksum-verified librespot-connect
+0.8.0 crate (SHA-256 `4b2a21e9e19b906c6676b1a515fc5529d5414f69049f5a167dfb2ea3206e5a27`),
+applies `librespot-queue.patch`, and copies `queue_control.rs`. It uses a Cargo
+path patch and preserves the upstream locked dependency graph. Pass a local
+crate archive as the optional second argument for offline builds; Homebrew uses
+a checksum-verified resource so installation needs no network access.
+
+The authenticated `queue` request has optional `edit` data. A read returns
+`queue: { revision, editable, entries: [{ uri, name, detail }], context_count }`.
+An edit includes `revision`, `action` (`remove`, `move_up`, `move_down`, `clear`),
+and `index` for single-item actions. Indices refer only to explicitly queued
+tracks. The player checks the revision and performs the edit in one event-loop
+turn, preserves automatic tracks and previous tracks, refreshes preloading,
+and publishes the Connect state before acknowledging it. The current track,
+position, and pause state are not changed. Transport timeouts can leave an
+uncertain outcome; reload before another edit. Reads and edits require this
+Spotifyd device to be active. Protocol version 1 remains backward compatible
+for older transport operations; old servers do not support `queue`.
+
+Linux releases still use upstream MPRIS and expose the Web API queue read-only.
+To enable local editing in a custom Linux build, check out the pinned Spotifyd
+revision, run `sh packaging/spotifyd/apply-local-control.sh <checkout>`, and build
+with `cargo build --locked --release --features local_control`. Keep the normal
+Linux audio and MPRIS features. Start that binary in place of the stock service;
+the TUI discovers the same authenticated loopback queue endpoint while retaining
+MPRIS transport. Restart Spotifyd after upgrading and press `R` in the queue view.
+
+Verification for the patch:
+
+```sh
+cargo test --locked --manifest-path <checkout>/Cargo.toml \
+  --no-default-features --features local_control local_control::tests
+cargo test --locked --manifest-path <checkout>/Cargo.toml \
+  -p spotifyd -p librespot-connect --no-default-features \
+  --features spotifyd/local_control queue_control::tests
+```

@@ -15,3 +15,5 @@ pub mod playback_runtime;
 pub mod spotifyd_device;
 pub mod spotifyd_lifecycle;
 pub mod ui;
+
+pub mod queue;

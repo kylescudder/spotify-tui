@@ -1,3 +1,4 @@
+use crate::queue::{QueueEdit, QueueSnapshot};
 use std::{
     fs,
     io::{self, ErrorKind},
@@ -132,6 +133,10 @@ impl LocalControlPlaybackSource {
         }
     }
 
+    pub async fn queue(&self, edit: Option<QueueEdit>) -> Result<QueueSnapshot, PlaybackError> {
+        self.request(ControlOperation::Queue { edit }).await?.queue.ok_or_else(|| PlaybackError::Control("Queue editing requires the updated packaged Spotifyd. Upgrade Spotifyd and refresh.".into()))
+    }
+
     async fn request_snapshot(&self) -> Result<PlaybackSnapshot, PlaybackError> {
         self.request(ControlOperation::Snapshot)
             .await?
@@ -226,6 +231,7 @@ struct ControlRequest {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum ControlOperation {
+    Queue { edit: Option<QueueEdit> },
     Snapshot,
     Activate,
     Toggle,
@@ -242,6 +248,8 @@ struct ControlResponse {
     ok: bool,
     #[serde(default)]
     snapshot: Option<WireSnapshot>,
+    #[serde(default)]
+    queue: Option<QueueSnapshot>,
     #[serde(default)]
     error: Option<String>,
     #[serde(default)]
@@ -325,6 +333,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_adapter_authenticates_reads_and_surfaces_a_stale_edit() {
+        use crate::queue::{QueueAction, QueueEntry};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let token_file = std::env::temp_dir().join(format!(
+            "spotify-queue-token-{}-{}",
+            std::process::id(),
+            address.port()
+        ));
+        fs::write(&token_file, "queue-secret\n").unwrap();
+        let snapshot = QueueSnapshot {
+            revision: "v1".into(),
+            entries: vec![QueueEntry {
+                uri: "spotify:track:first".into(),
+                name: "First".into(),
+                detail: "Artist".into(),
+            }],
+            editable: true,
+            context_count: 2,
+            notice: None,
+        };
+        let response_snapshot = snapshot.clone();
+        let server = tokio::spawn(async move {
+            for editing in [false, true] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut line = String::new();
+                BufReader::new(read).read_line(&mut line).await.unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["token"], "queue-secret");
+                assert_eq!(request["op"], "queue");
+                let response = if editing {
+                    assert_eq!(
+                        request["edit"],
+                        serde_json::json!({"revision":"v1","action":"remove","index":0})
+                    );
+                    serde_json::json!({"version":1,"ok":false,"error":"Queue changed. Refresh before editing."})
+                } else {
+                    assert!(request["edit"].is_null());
+                    serde_json::json!({"version":1,"ok":true,"queue":response_snapshot})
+                };
+                write
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let source = LocalControlPlaybackSource::connect_to(address, token_file.clone());
+        assert_eq!(source.queue(None).await.unwrap(), snapshot);
+        let error = source
+            .queue(Some(QueueEdit {
+                revision: "v1".into(),
+                action: QueueAction::Remove { index: 0 },
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Queue changed"));
+        server.await.unwrap();
+        fs::remove_file(token_file).unwrap();
+    }
+
+    #[tokio::test]
     async fn adapter_authenticates_and_translates_commands() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -355,6 +425,7 @@ mod tests {
                 let response = ControlResponse {
                     version: PROTOCOL_VERSION,
                     ok: true,
+                    queue: None,
                     snapshot: Some(WireSnapshot {
                         status: "paused".to_owned(),
                         track_id: None,

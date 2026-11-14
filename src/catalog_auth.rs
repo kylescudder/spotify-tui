@@ -22,9 +22,9 @@ const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const EXPIRY_MARGIN: Duration = Duration::from_secs(30);
-const AUTHORIZATION_SCOPES: &str = "user-modify-playback-state user-read-recently-played \
+const AUTHORIZATION_SCOPES: &str = "user-modify-playback-state user-read-playback-state user-read-recently-played \
     user-top-read user-follow-read user-follow-modify playlist-read-private";
-const AUTHORIZATION_VERSION: u32 = 4;
+const AUTHORIZATION_VERSION: u32 = 5;
 const HOME_CACHE_FILE: &str = "home-cache.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -618,7 +618,7 @@ token_cache = {token_cache:?}
         assert_eq!(
             parameters.get("scope").map(|value| value.as_ref()),
             Some(
-                "user-modify-playback-state user-read-recently-played user-top-read \
+                "user-modify-playback-state user-read-playback-state user-read-recently-played user-top-read \
                  user-follow-read user-follow-modify playlist-read-private"
             )
         );

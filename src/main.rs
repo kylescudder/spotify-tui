@@ -385,6 +385,14 @@ fn run(
         let browser_mode = app.browser().mode();
         if let Some(command) = input::browser_command_for_key(key, browser_mode) {
             match app.browse(command) {
+                BrowserEffect::ManageQueue { request_id, edit } => {
+                    if let Err(error) = services.catalog.manage_queue(request_id, edit) {
+                        app.browser_mut().resolve(CatalogEvent::QueueLoaded {
+                            request_id,
+                            result: Err(error.to_string()),
+                        });
+                    }
+                }
                 BrowserEffect::FollowArtist { id, following } => {
                     if let Err(error) = services.catalog.follow_artist(id.clone(), following) {
                         app.browser_mut()
@@ -392,6 +400,15 @@ fn run(
                                 id,
                                 result: Err(error.to_string()),
                             });
+                    }
+                }
+                BrowserEffect::Queue(item) => {
+                    let name = item.name().to_owned();
+                    if let Err(error) = services.catalog.queue(item) {
+                        app.browser_mut().resolve(CatalogEvent::QueueUpdated {
+                            name,
+                            result: Err(error.to_string()),
+                        });
                     }
                 }
                 BrowserEffect::None => {}
@@ -425,14 +442,19 @@ fn run(
             continue;
         }
 
-        if !matches!(browser_mode, BrowserMode::Closed | BrowserMode::Home) {
+        if !matches!(
+            browser_mode,
+            BrowserMode::Closed | BrowserMode::Home | BrowserMode::Queue
+        ) {
             continue;
         }
 
         let Some(command) = input::command_for_key(key) else {
             continue;
         };
-        if browser_mode == BrowserMode::Home && !command.applies_on_home() {
+        if matches!(browser_mode, BrowserMode::Home | BrowserMode::Queue)
+            && !command.applies_on_home()
+        {
             continue;
         }
         match command {
@@ -600,7 +622,9 @@ fn drain_catalog_events(app: &mut AppState, services: &RuntimeServices<'_>) {
                     PlaybackCommand::OpenUri(playback.uri().to_owned()),
                 );
             }
-            event @ (CatalogEvent::ArtistFollowUpdated { .. }
+            event @ (CatalogEvent::QueueLoaded { .. }
+            | CatalogEvent::QueueUpdated { .. }
+            | CatalogEvent::ArtistFollowUpdated { .. }
             | CatalogEvent::Loaded { .. }
             | CatalogEvent::Failed { .. }
             | CatalogEvent::HomeUpdated(_)) => {

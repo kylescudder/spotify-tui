@@ -561,13 +561,13 @@ fn render_playback(
     );
 
     let help = if area.width >= 90 {
-        "/ search · H home · A artist · b album · Space play/pause · p/n track · q quit"
+        "v queue · / search · H home · A artist · b album · Space play/pause · p/n track · q quit"
     } else if area.width >= 70 {
-        "/ search · A artist · b album · Space play/pause · p/n track · q quit"
+        "v queue · / search · A artist · b album · Space play/pause · p/n track · q quit"
     } else if area.width >= 54 {
-        "/ search · A artist · b album · Space play · q quit"
+        "v queue · / search · A artist · b album · Space play · q quit"
     } else {
-        "/ search · A artist · b album · q"
+        "v queue · / search · A artist · b album · q"
     };
     frame.render_widget(
         Paragraph::new(help)
@@ -624,16 +624,25 @@ fn render_home(
     frame.render_stateful_widget(list, list_area, &mut list_state);
 
     frame.render_widget(
-        home_now_playing(state, theme).alignment(Alignment::Center),
+        state
+            .browser()
+            .queue_status()
+            .map_or_else(
+                || home_now_playing(state, theme),
+                |status| {
+                    Paragraph::new(status.to_owned()).style(Style::default().fg(theme.accent()))
+                },
+            )
+            .alignment(Alignment::Center),
         layout[2],
     );
 
-    let help = if area.width >= 104 {
-        "j/k navigate · Enter open/play · Space play/pause · p/n track · / search · R refresh · Esc player"
+    let help = if area.width >= 120 {
+        "j/k navigate · Enter open/play · Q queue · v view queue · Space pause · / search · R refresh · Esc player"
     } else if area.width >= 70 {
-        "j/k navigate · Enter open/play · Space pause · / search · Esc player"
+        "j/k · Enter open/play · Q queue · v queue · / search · Esc player"
     } else {
-        "j/k navigate · Enter open · / search · Esc player"
+        "j/k · Enter open · Q add · v queue · Esc player"
     };
     frame.render_widget(
         Paragraph::new(help)
@@ -740,6 +749,122 @@ fn catalog_highlight_style(theme: &Theme) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+fn render_queue(frame: &mut Frame, area: Rect, queue: &crate::queue::QueueState, theme: &Theme) {
+    let layout = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(3),
+        Constraint::Length(2),
+    ])
+    .margin(1)
+    .split(area);
+    let snapshot = queue.snapshot.as_ref();
+    let editable = snapshot.is_some_and(|s| s.editable);
+    let title = if editable {
+        "Queue — added tracks"
+    } else {
+        "Queue — upcoming tracks (read-only)"
+    };
+    frame.render_widget(
+        Paragraph::new(title).style(
+            Style::default()
+                .fg(theme.accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        layout[0],
+    );
+    let notice = snapshot.map_or_else(String::new, |s| {
+        s.notice.clone().unwrap_or_else(|| {
+            format!(
+                "{} added {} · {} automatic {} {}. Edits preserve current playback.",
+                s.entries.len(),
+                if s.entries.len() == 1 {
+                    "track"
+                } else {
+                    "tracks"
+                },
+                s.context_count,
+                if s.context_count == 1 {
+                    "track"
+                } else {
+                    "tracks"
+                },
+                if s.context_count == 1 {
+                    "follows"
+                } else {
+                    "follow"
+                }
+            )
+        })
+    });
+    frame.render_widget(
+        Paragraph::new(notice)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(theme.muted())),
+        layout[1],
+    );
+    if let Some(snapshot) = snapshot {
+        if snapshot.entries.is_empty() {
+            frame.render_widget(
+                Paragraph::new(if editable {
+                    "No added tracks"
+                } else {
+                    "Queue is empty"
+                })
+                .style(Style::default().fg(theme.muted())),
+                layout[2],
+            );
+        } else {
+            let items = snapshot.entries.iter().map(|entry| {
+                let detail = if entry.detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", entry.detail)
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(entry.name.clone(), Style::default().fg(theme.foreground())),
+                    Span::styled(detail, Style::default().fg(theme.muted())),
+                ]))
+            });
+            let list = List::new(items)
+                .highlight_symbol("› ")
+                .highlight_style(catalog_highlight_style(theme));
+            let mut selection = ListState::default().with_selected(Some(queue.selected));
+            frame.render_stateful_widget(list, layout[2], &mut selection);
+        }
+    }
+    let (status, color) = if queue.pending.is_some() {
+        ("Loading/updating queue…", theme.warning())
+    } else if queue.confirm_clear {
+        (
+            "Clear added tracks? y confirm · n/Esc cancel",
+            theme.warning(),
+        )
+    } else if let Some(error) = queue.error.as_deref() {
+        (error, theme.error())
+    } else {
+        ("", theme.muted())
+    };
+    frame.render_widget(
+        Paragraph::new(status)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(color)),
+        layout[3],
+    );
+    let help = if editable {
+        "j/k select · d remove · J/K move · c clear\nR refresh · Space pause · Esc back"
+    } else {
+        "j/k select · R refresh · Space pause · Esc back"
+    };
+    frame.render_widget(
+        Paragraph::new(help)
+            .wrap(Wrap { trim: true })
+            .style(Style::default().fg(theme.muted())),
+        layout[4],
+    );
+}
+
 fn render_browser(
     frame: &mut Frame,
     area: Rect,
@@ -749,6 +874,7 @@ fn render_browser(
     artwork_renderer: &mut ArtworkRenderer,
 ) {
     match browser.view() {
+        BrowserView::Queue => render_queue(frame, area, browser.queue(), theme),
         BrowserView::Closed | BrowserView::Home => {}
         BrowserView::Editing { query } => render_search_editor(frame, area, query, theme),
         BrowserView::Loading { label } => {
@@ -825,14 +951,14 @@ fn render_browser(
             }
 
             let help = if area.width >= 80 {
-                "j/k or ↑/↓ navigate · Enter open/play · / search · H home · Esc back · q quit"
+                "j/k · Enter open/play · Q add · v queue · / search · H home · Esc back"
             } else if area.width >= 70 {
-                "j/k or ↑/↓ navigate · Enter open/play · / search · Esc back · q quit"
+                "j/k · Enter open/play · Q add · v queue · / search · Esc back"
             } else {
-                "j/k navigate · Enter open · / search · Esc back"
+                "j/k · Enter open · Q add · v queue · Esc back"
             };
             frame.render_widget(
-                Paragraph::new(help)
+                Paragraph::new(browser.queue_status().unwrap_or(help))
                     .style(Style::default().fg(theme.muted()))
                     .alignment(Alignment::Center),
                 layout[2],
@@ -1131,6 +1257,87 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn queue_management_shows_edit_controls_confirmation_and_read_only_fallback() {
+        use crate::queue::{QueueEntry, QueueSnapshot};
+        for (width, height) in [(60, 20), (110, 34)] {
+            let mut state = AppState::default();
+            state.browse(BrowserCommand::OpenQueue);
+            state.browser_mut().resolve(CatalogEvent::QueueLoaded {
+                request_id: 1,
+                result: Ok(QueueSnapshot {
+                    revision: "v1".into(),
+                    editable: true,
+                    context_count: 2,
+                    notice: None,
+                    entries: vec![QueueEntry {
+                        uri: "spotify:track:first".into(),
+                        name: "First track".into(),
+                        detail: "Artist".into(),
+                    }],
+                }),
+            });
+            let text = render_to_text(&state, width, height);
+            assert!(text.contains("First track"));
+            assert!(!text.contains("1 added tracks"));
+            assert!(text.contains("d remove"));
+            state.browse(BrowserCommand::ClearQueue);
+            assert!(
+                render_to_text(&state, width, height).contains("Clear added tracks? y confirm")
+            );
+            state.browse(BrowserCommand::CancelClearQueue);
+            state.browse(BrowserCommand::RefreshQueue);
+            state.browser_mut().resolve(CatalogEvent::QueueLoaded {
+                request_id: 2,
+                result: Ok(QueueSnapshot {
+                    revision: String::new(),
+                    editable: false,
+                    context_count: 0,
+                    notice: Some("Upgrade Spotifyd to edit".into()),
+                    entries: vec![],
+                }),
+            });
+            let text = render_to_text(&state, width, height);
+            assert!(text.contains("read-only"));
+            assert!(text.contains("Upgrade Spotifyd"));
+            assert!(!text.contains("d remove"));
+        }
+    }
+
+    #[test]
+    fn queue_feedback_is_visible_on_home_and_catalogue_at_multiple_sizes() {
+        for home in [true, false] {
+            let mut state = AppState::default();
+            if home {
+                state.browser_mut().apply(BrowserCommand::OpenHome);
+            } else {
+                state.browser_mut().apply(BrowserCommand::OpenSearch);
+                state.browser_mut().apply(BrowserCommand::Insert('x'));
+                state.browser_mut().apply(BrowserCommand::Submit);
+                state.browser_mut().resolve(CatalogEvent::Loaded {
+                    request_id: 1,
+                    page: CatalogPage::Search {
+                        query: "x".to_owned(),
+                        items: vec![],
+                    },
+                });
+            }
+            for result in [Ok(2), Err("No active device".to_owned())] {
+                state.browser_mut().resolve(CatalogEvent::QueueUpdated {
+                    name: "Album".to_owned(),
+                    result,
+                });
+                for (width, height) in [(60, 20), (100, 28), (160, 40)] {
+                    let text = render_to_text(&state, width, height);
+                    assert!(
+                        text.contains(state.browser().queue_status().unwrap()),
+                        "missing queue feedback at {width}x{height}: {text}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
