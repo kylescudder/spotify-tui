@@ -1,6 +1,7 @@
+use crate::queue::{QueueAction, QueueEdit, QueueState};
 use crate::{
     catalog::{
-        CatalogEvent, CatalogItemKind, CatalogPage, CatalogPlayback, CatalogRequest,
+        CatalogEvent, CatalogItem, CatalogItemKind, CatalogPage, CatalogPlayback, CatalogRequest,
         TrackDestination,
     },
     config::HomeSectionKind,
@@ -9,6 +10,7 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserMode {
+    Queue,
     Closed,
     Home,
     Editing,
@@ -18,11 +20,21 @@ pub enum BrowserMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserCommand {
+    OpenQueue,
+    RemoveFromQueue,
+    MoveQueueUp,
+    MoveQueueDown,
+    ClearQueue,
+    RefreshQueue,
+    EditQueue(QueueAction),
+    ConfirmClearQueue,
+    CancelClearQueue,
     OpenSearch,
     OpenCurrent(TrackDestination),
     OpenHome,
     RefreshHome,
     ToggleArtistFollow,
+    AddToQueue,
     Insert(char),
     Paste(String),
     Backspace,
@@ -37,6 +49,11 @@ pub enum BrowserCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserEffect {
+    ManageQueue {
+        request_id: u64,
+        edit: Option<QueueEdit>,
+    },
+    Queue(CatalogItem),
     FollowArtist {
         id: String,
         following: bool,
@@ -55,6 +72,7 @@ pub enum BrowserEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserView {
+    Queue,
     Closed,
     Home,
     Editing { query: String },
@@ -74,6 +92,10 @@ pub struct BrowserState {
     home: HomePage,
     home_selected: usize,
     home_is_root: bool,
+    queue: QueueState,
+    queue_return: Option<Box<BrowserView>>,
+    queue_status: Option<String>,
+    queue_pending: bool,
     pending_follow: Option<String>,
     follow_error: Option<(String, String)>,
 }
@@ -90,6 +112,10 @@ impl Default for BrowserState {
             home: HomePage::default(),
             home_selected: 0,
             home_is_root: false,
+            queue: QueueState::default(),
+            queue_return: None,
+            queue_status: None,
+            queue_pending: false,
             pending_follow: None,
             follow_error: None,
         }
@@ -97,6 +123,14 @@ impl Default for BrowserState {
 }
 
 impl BrowserState {
+    pub fn queue(&self) -> &QueueState {
+        &self.queue
+    }
+
+    pub fn queue_status(&self) -> Option<&str> {
+        self.queue_status.as_deref()
+    }
+
     pub fn set_home_sections(&mut self, sections: &[HomeSectionKind]) {
         self.home = HomePage::new(sections);
         self.home_selected = 0;
@@ -142,6 +176,7 @@ impl BrowserState {
 
     pub const fn mode(&self) -> BrowserMode {
         match self.view {
+            BrowserView::Queue => BrowserMode::Queue,
             BrowserView::Closed => BrowserMode::Closed,
             BrowserView::Home => BrowserMode::Home,
             BrowserView::Editing { .. } => BrowserMode::Editing,
@@ -154,7 +189,8 @@ impl BrowserState {
         match &self.view {
             BrowserView::Page { page, selected } => page.artwork_url(*selected),
             BrowserView::Home => self.home.artwork_url(self.home_selected),
-            BrowserView::Closed
+            BrowserView::Queue
+            | BrowserView::Closed
             | BrowserView::Editing { .. }
             | BrowserView::Loading { .. }
             | BrowserView::Error { .. } => None,
@@ -165,7 +201,8 @@ impl BrowserState {
         match &self.view {
             BrowserView::Page { page, selected } => page.prefetch_artwork_urls(*selected),
             BrowserView::Home => self.home.prefetch_artwork_urls(self.home_selected),
-            BrowserView::Closed
+            BrowserView::Queue
+            | BrowserView::Closed
             | BrowserView::Editing { .. }
             | BrowserView::Loading { .. }
             | BrowserView::Error { .. } => Vec::new(),
@@ -199,7 +236,115 @@ impl BrowserState {
     }
 
     pub fn apply(&mut self, command: BrowserCommand) -> BrowserEffect {
+        if self.queue.confirm_clear
+            && matches!(self.view, BrowserView::Queue)
+            && !matches!(
+                command,
+                BrowserCommand::ConfirmClearQueue
+                    | BrowserCommand::CancelClearQueue
+                    | BrowserCommand::Back
+                    | BrowserCommand::Quit
+            )
+        {
+            return BrowserEffect::None;
+        }
+        if !self.queue_pending
+            && matches!(
+                command,
+                BrowserCommand::Next
+                    | BrowserCommand::Previous
+                    | BrowserCommand::Activate
+                    | BrowserCommand::Back
+                    | BrowserCommand::OpenSearch
+                    | BrowserCommand::OpenHome
+                    | BrowserCommand::Close
+            )
+        {
+            self.queue_status = None;
+        }
         match command {
+            BrowserCommand::RemoveFromQueue => {
+                self.apply(BrowserCommand::EditQueue(QueueAction::Remove {
+                    index: self.queue.selected,
+                }))
+            }
+            BrowserCommand::MoveQueueUp => {
+                self.apply(BrowserCommand::EditQueue(QueueAction::MoveUp {
+                    index: self.queue.selected,
+                }))
+            }
+            BrowserCommand::MoveQueueDown => {
+                self.apply(BrowserCommand::EditQueue(QueueAction::MoveDown {
+                    index: self.queue.selected,
+                }))
+            }
+            BrowserCommand::ClearQueue => self.apply(BrowserCommand::EditQueue(QueueAction::Clear)),
+            BrowserCommand::OpenQueue => {
+                if !matches!(
+                    self.view,
+                    BrowserView::Closed | BrowserView::Home | BrowserView::Page { .. }
+                ) {
+                    return BrowserEffect::None;
+                }
+                self.queue_return = Some(Box::new(self.view.clone()));
+                self.view = BrowserView::Queue;
+                self.queue = QueueState::default();
+                self.queue_request(None)
+            }
+            BrowserCommand::RefreshQueue if matches!(self.view, BrowserView::Queue) => {
+                if self.queue.pending.is_some() {
+                    return BrowserEffect::None;
+                }
+                self.queue_request(None)
+            }
+            BrowserCommand::EditQueue(action) if matches!(self.view, BrowserView::Queue) => {
+                let Some(edit) = self.queue.edit(action) else {
+                    return BrowserEffect::None;
+                };
+                if matches!(edit.action, QueueAction::Clear) {
+                    self.queue.confirm_clear = true;
+                    BrowserEffect::None
+                } else {
+                    self.queue_request(Some(edit))
+                }
+            }
+            BrowserCommand::ConfirmClearQueue
+                if self.queue.confirm_clear && matches!(self.view, BrowserView::Queue) =>
+            {
+                self.queue.confirm_clear = false;
+                match self.queue.edit(QueueAction::Clear) {
+                    Some(edit) => self.queue_request(Some(edit)),
+                    None => BrowserEffect::None,
+                }
+            }
+            BrowserCommand::CancelClearQueue => {
+                self.queue.confirm_clear = false;
+                BrowserEffect::None
+            }
+            BrowserCommand::RefreshQueue
+            | BrowserCommand::EditQueue(_)
+            | BrowserCommand::ConfirmClearQueue => BrowserEffect::None,
+            BrowserCommand::AddToQueue => {
+                if self.queue_pending {
+                    return BrowserEffect::None;
+                }
+                let item = match &self.view {
+                    BrowserView::Home => self.home.item(self.home_selected),
+                    BrowserView::Page { page, selected } => page.items().get(*selected),
+                    _ => None,
+                };
+                let Some(item) = item.cloned() else {
+                    return BrowserEffect::None;
+                };
+                if !matches!(item.kind(), CatalogItemKind::Track | CatalogItemKind::Album) {
+                    self.queue_status = Some("Select a track or album to add to queue.".to_owned());
+                    return BrowserEffect::None;
+                }
+                self.queue_status = Some(format!("Adding {} to queue…", item.name()));
+                self.queue_pending = true;
+                BrowserEffect::Queue(item)
+            }
+
             BrowserCommand::ToggleArtistFollow => {
                 let BrowserView::Page {
                     page:
@@ -291,6 +436,11 @@ impl BrowserState {
 
     pub fn resolve(&mut self, event: CatalogEvent) {
         match event {
+            CatalogEvent::QueueLoaded { request_id, result } => {
+                if matches!(self.view, BrowserView::Queue) {
+                    self.queue.resolve(request_id, result);
+                }
+            }
             CatalogEvent::ArtistFollowUpdated { id, result } => {
                 if self.pending_follow.as_deref() != Some(&id) {
                     return;
@@ -348,6 +498,16 @@ impl BrowserState {
                 self.view = BrowserView::Error { message };
                 self.pending_pushes_history = false;
             }
+            CatalogEvent::QueueUpdated { name, result } => {
+                self.queue_pending = false;
+                self.queue_status = Some(match result {
+                    Ok(count) => format!(
+                        "Added {name} to queue ({count} {}).",
+                        if count == 1 { "track" } else { "tracks" }
+                    ),
+                    Err(message) => format!("Queue: {message}"),
+                });
+            }
             CatalogEvent::HomeUpdated(update) => self.apply_home_update(update),
             CatalogEvent::Loaded { .. }
             | CatalogEvent::Failed { .. }
@@ -385,7 +545,35 @@ impl BrowserState {
         )
     }
 
+    fn queue_request(&mut self, edit: Option<QueueEdit>) -> BrowserEffect {
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.queue.pending = Some(self.next_request_id);
+        self.queue.confirm_clear = false;
+        if let Some(edit) = &edit {
+            match edit.action {
+                QueueAction::MoveUp { index } => self.queue.selected = index - 1,
+                QueueAction::MoveDown { index } => self.queue.selected = index + 1,
+                _ => {}
+            }
+        }
+        BrowserEffect::ManageQueue {
+            request_id: self.next_request_id,
+            edit,
+        }
+    }
+
     fn move_selection(&mut self, delta: isize) {
+        if matches!(self.view, BrowserView::Queue) {
+            if !self.queue.confirm_clear && self.queue.pending.is_none() {
+                let count = self.queue.snapshot.as_ref().map_or(0, |s| s.entries.len());
+                self.queue.selected = self
+                    .queue
+                    .selected
+                    .saturating_add_signed(delta)
+                    .min(count.saturating_sub(1));
+            }
+            return;
+        }
         if matches!(self.view, BrowserView::Home) {
             self.home_selected = self
                 .home_selected
@@ -410,7 +598,8 @@ impl BrowserState {
         let item = match &self.view {
             BrowserView::Page { page, selected } => page.items().get(*selected).cloned(),
             BrowserView::Home => self.home.item(self.home_selected).cloned(),
-            BrowserView::Closed
+            BrowserView::Queue
+            | BrowserView::Closed
             | BrowserView::Editing { .. }
             | BrowserView::Loading { .. }
             | BrowserView::Error { .. } => None,
@@ -456,6 +645,18 @@ impl BrowserState {
     }
 
     fn back(&mut self) {
+        if matches!(self.view, BrowserView::Queue) {
+            if self.queue.confirm_clear {
+                self.queue.confirm_clear = false;
+                return;
+            }
+            self.view = self
+                .queue_return
+                .take()
+                .map_or(BrowserView::Closed, |view| *view);
+            self.queue.pending = None;
+            return;
+        }
         match self.view {
             BrowserView::Loading { .. } | BrowserView::Error { .. } => {
                 if let Some(view) = self.fallback.take() {
@@ -473,6 +674,7 @@ impl BrowserState {
                     self.leave();
                 }
             }
+            BrowserView::Queue => unreachable!(),
             BrowserView::Home | BrowserView::Closed => self.close(),
             BrowserView::Editing { .. } => self.leave(),
         }
@@ -525,6 +727,133 @@ mod tests {
             },
             ..BrowserState::default()
         }
+    }
+
+    #[test]
+    fn clearing_requires_confirmation_and_late_queue_results_do_not_reopen_the_view() {
+        use crate::queue::{QueueEntry, QueueSnapshot};
+        let mut browser = home_browser();
+        browser.apply(BrowserCommand::OpenQueue);
+        let snapshot = QueueSnapshot {
+            revision: "v1".into(),
+            entries: vec![QueueEntry {
+                uri: "spotify:track:one".into(),
+                name: "One".into(),
+                detail: String::new(),
+            }],
+            editable: true,
+            context_count: 2,
+            notice: None,
+        };
+        browser.resolve(CatalogEvent::QueueLoaded {
+            request_id: 1,
+            result: Ok(snapshot.clone()),
+        });
+        assert_eq!(
+            browser.apply(BrowserCommand::ClearQueue),
+            BrowserEffect::None
+        );
+        assert!(browser.queue().confirm_clear);
+        assert_eq!(
+            browser.apply(BrowserCommand::RemoveFromQueue),
+            BrowserEffect::None
+        );
+        browser.apply(BrowserCommand::Back);
+        assert_eq!(browser.mode(), BrowserMode::Queue);
+        assert!(!browser.queue().confirm_clear);
+        browser.apply(BrowserCommand::ClearQueue);
+        assert!(matches!(
+            browser.apply(BrowserCommand::ConfirmClearQueue),
+            BrowserEffect::ManageQueue {
+                request_id: 2,
+                edit: Some(_)
+            }
+        ));
+        browser.apply(BrowserCommand::Back);
+        assert_eq!(browser.view(), &BrowserView::Home);
+        browser.resolve(CatalogEvent::QueueLoaded {
+            request_id: 2,
+            result: Ok(snapshot.clone()),
+        });
+        assert_eq!(browser.view(), &BrowserView::Home);
+        browser.apply(BrowserCommand::OpenQueue);
+        let mut read_only = snapshot;
+        read_only.editable = false;
+        browser.resolve(CatalogEvent::QueueLoaded {
+            request_id: 3,
+            result: Ok(read_only),
+        });
+        assert_eq!(
+            browser.apply(BrowserCommand::RemoveFromQueue),
+            BrowserEffect::None
+        );
+        assert_eq!(
+            browser.apply(BrowserCommand::ClearQueue),
+            BrowserEffect::None
+        );
+    }
+
+    #[test]
+    fn queue_management_waits_for_acknowledgement_and_returns_to_the_same_page() {
+        use crate::queue::{QueueAction, QueueEdit, QueueEntry, QueueSnapshot};
+        let mut browser = artist_browser();
+        let original = browser.view().clone();
+        assert_eq!(
+            browser.apply(BrowserCommand::OpenQueue),
+            BrowserEffect::ManageQueue {
+                request_id: 1,
+                edit: None
+            }
+        );
+        assert_eq!(browser.mode(), BrowserMode::Queue);
+        browser.resolve(CatalogEvent::QueueLoaded {
+            request_id: 1,
+            result: Ok(QueueSnapshot {
+                revision: "first".into(),
+                editable: true,
+                context_count: 4,
+                notice: None,
+                entries: ["one", "two"]
+                    .into_iter()
+                    .map(|name| QueueEntry {
+                        uri: format!("spotify:track:{name}"),
+                        name: name.into(),
+                        detail: "Artist".into(),
+                    })
+                    .collect(),
+            }),
+        });
+        assert_eq!(
+            browser.apply(BrowserCommand::EditQueue(QueueAction::MoveDown {
+                index: 0
+            })),
+            BrowserEffect::ManageQueue {
+                request_id: 2,
+                edit: Some(QueueEdit {
+                    revision: "first".into(),
+                    action: QueueAction::MoveDown { index: 0 }
+                })
+            }
+        );
+        assert_eq!(
+            browser.queue().snapshot.as_ref().unwrap().entries[0].name,
+            "one"
+        );
+        assert_eq!(
+            browser.apply(BrowserCommand::EditQueue(QueueAction::Remove { index: 0 })),
+            BrowserEffect::None
+        );
+        browser.resolve(CatalogEvent::QueueLoaded {
+            request_id: 2,
+            result: Err("Queue changed. Refresh and try again.".into()),
+        });
+        assert!(browser.queue().error.is_some());
+        assert_eq!(
+            browser.apply(BrowserCommand::EditQueue(QueueAction::Remove { index: 0 })),
+            BrowserEffect::None
+        );
+        browser.apply(BrowserCommand::Back);
+        assert_eq!(browser.view(), &original);
     }
 
     #[test]
@@ -675,6 +1004,88 @@ mod tests {
             query: "shikari".to_owned(),
             items,
         }
+    }
+
+    #[test]
+    fn queue_from_home_keeps_selection_and_reports_success_or_failure() {
+        let mut browser = home_browser();
+        let view = browser.view().clone();
+        assert_eq!(
+            browser.apply(BrowserCommand::AddToQueue),
+            BrowserEffect::Queue(item(CatalogItemKind::Track, "recent"))
+        );
+        assert_eq!(browser.view(), &view);
+        assert_eq!(
+            browser.apply(BrowserCommand::AddToQueue),
+            BrowserEffect::None
+        );
+        browser.resolve(CatalogEvent::QueueUpdated {
+            name: "recent".to_owned(),
+            result: Ok(1),
+        });
+        assert!(
+            browser
+                .queue_status()
+                .unwrap()
+                .contains("Added recent to queue")
+        );
+        browser.apply(BrowserCommand::Next);
+        assert_eq!(
+            browser.apply(BrowserCommand::AddToQueue),
+            BrowserEffect::Queue(item_with_artwork(CatalogItemKind::Album, "release"))
+        );
+        assert_eq!(browser.home_selected(), 1);
+        browser.resolve(CatalogEvent::QueueUpdated {
+            name: "release".to_owned(),
+            result: Err("device unavailable".to_owned()),
+        });
+        assert!(
+            browser
+                .queue_status()
+                .unwrap()
+                .contains("device unavailable")
+        );
+        assert!(matches!(
+            browser.apply(BrowserCommand::AddToQueue),
+            BrowserEffect::Queue(_)
+        ));
+    }
+
+    #[test]
+    fn queue_from_catalogue_keeps_the_page_and_rejects_artists_and_playlists() {
+        for kind in [
+            CatalogItemKind::Track,
+            CatalogItemKind::Album,
+            CatalogItemKind::Artist,
+            CatalogItemKind::Playlist,
+        ] {
+            let mut browser = BrowserState::default();
+            browser.apply(BrowserCommand::OpenSearch);
+            browser.apply(BrowserCommand::Insert('x'));
+            browser.apply(BrowserCommand::Submit);
+            browser.resolve(CatalogEvent::Loaded {
+                request_id: 1,
+                page: search_page(vec![item(kind, "selection")]),
+            });
+            let view = browser.view().clone();
+            let effect = browser.apply(BrowserCommand::AddToQueue);
+            if matches!(kind, CatalogItemKind::Track | CatalogItemKind::Album) {
+                assert_eq!(effect, BrowserEffect::Queue(item(kind, "selection")));
+            } else {
+                assert_eq!(effect, BrowserEffect::None);
+                assert!(
+                    browser
+                        .queue_status()
+                        .unwrap()
+                        .contains("Select a track or album")
+                );
+            }
+            assert_eq!(browser.view(), &view);
+        }
+        assert_eq!(
+            BrowserState::default().apply(BrowserCommand::AddToQueue),
+            BrowserEffect::None
+        );
     }
 
     #[test]

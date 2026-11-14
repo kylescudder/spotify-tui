@@ -18,6 +18,10 @@ grep -F 'homepage "https://github.com/example/spotify-tui"' "$output" >/dev/null
 grep -F 'releases/download/v1.2.3/spotify-tui-source.tar.gz' "$output" >/dev/null
 grep -F "sha256 \"$checksum\"" "$output" >/dev/null
 grep -F 'resource "spotifyd" do' "$output" >/dev/null
+grep -F 'resource "librespot-connect" do' "$output" >/dev/null
+grep -F 'using: :nounzip' "$output" >/dev/null
+grep -F '4b2a21e9e19b906c6676b1a515fc5529d5414f69049f5a167dfb2ea3206e5a27' "$output" >/dev/null
+grep -F 'buildpath/"librespot-connect-source/librespot-connect-0.8.0.crate"' "$output" >/dev/null
 grep -F "conflicts_with \"spotifyd\", because: \"both install a \`spotifyd\` binary\"" "$output" >/dev/null
 grep -F 'rodio_backend,local_control' "$output" >/dev/null
 grep -F 'service do' "$output" >/dev/null

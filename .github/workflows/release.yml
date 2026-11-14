@@ -400,11 +400,16 @@ jobs:
             -o dist/spotifyd-0.4.2-source.tar.gz
           echo "d711e441d709e76f93b4ab297782d01dee6aa166e4015746fd5230d61fcaba71  dist/spotifyd-0.4.2-source.tar.gz" | sha256sum --check
 
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://static.crates.io/crates/librespot-connect/librespot-connect-0.8.0.crate \
+            -o dist/librespot-connect-0.8.0-source.crate
+          echo "4b2a21e9e19b906c6676b1a515fc5529d5414f69049f5a167dfb2ea3206e5a27  dist/librespot-connect-0.8.0-source.crate" | sha256sum --check
+
           source_sha=$(sha256sum dist/spotify-tui-source.tar.gz | awk '{ print $1 }')
           sh scripts/render-homebrew-formula.sh "$GITHUB_REPOSITORY" "$VERSION" "$source_sha" dist/spotify-tui.rb
 
           cd dist
-          sha256sum install.sh install.ps1 spotify-* > SHA256SUMS
+          sha256sum install.sh install.ps1 spotify-* librespot-* > SHA256SUMS
 
       - name: Upload release bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

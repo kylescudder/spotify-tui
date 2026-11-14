@@ -228,6 +228,43 @@ is pending instead of waiting for its normal 250-millisecond idle tick. Wide
 catalogue views show a borderless image beside the list; narrow views devote the
 full width to navigation instead.
 
+Queueing requires Spotify Premium and an active Spotifyd device. The TUI shows
+confirmation or a failure with the number of tracks added; retrying a partially
+queued album adds those tracks again. Queue requests always target local Spotifyd.
+
+### Queue management
+
+Press `v` from the player, Home, or a catalogue page to open the queue.
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, arrows | Select an added track. |
+| `d` / `Delete` | Remove the selected track. |
+| `J` / `K` | Move the selected track down / up. |
+| `c`, then `y` | Clear manually added tracks; `n` or `Esc` cancels. |
+| `R` | Refresh the queue. |
+| `Space` | Play or pause. |
+| `Esc` | Return to the previous screen and selection. |
+
+Editing requires the updated patched Spotifyd with `local_control` enabled,
+active on this device. macOS and Windows packages include this runtime. Linux
+packages use stock Spotifyd/MPRIS and show a read-only view of Spotify's active
+device queue; Linux users can build the patched runtime with `local_control`
+using [the patch instructions](packaging/spotifyd/README.md).
+
+The editable view contains manually added tracks. Automatic album/playlist
+tracks remain in their playback context; removing or clearing added tracks
+preserves that context, the current track, its position, and playback history.
+Edits check a queue revision in the player's own event loop. If another client
+changes the queue first, the edit is rejected: press `R`, review, and retry.
+After a failed or timed-out edit, refresh before retrying because it may already
+have reached the player. Edits are never redirected to another device.
+
+Older runtimes fall back to a read-only upcoming queue with an upgrade message.
+Queue reading adds the `user-read-playback-state` permission, so existing users
+will be asked to authorize catalogue access again. No Spotify client password
+is collected.
+
 ### Playback controls
 
 | Key | Action |
@@ -338,6 +375,7 @@ or `Esc` from the player. It has four sections:
 
 - `j`/`k` or the arrow keys move through every section.
 - `Enter` opens an artist or album, or starts a selected track or playlist.
+- `Q` adds the selected track or album to the Spotifyd queue without interrupting playback. Albums queue all tracks in order. Artists and playlists cannot be queued.
 - `Space`, `n`, and `p` control playback without leaving Home.
 - `/` searches, and `Esc` returns here from the results.
 - `Esc`, `h`, or `Left` goes to the player. `q` quits.
@@ -373,6 +411,7 @@ choose the first content in a Spotify session that has no resumable context.
 
 - `j`/`k` or the arrow keys move through results.
 - `Enter` opens an artist or album, or starts a selected track or playlist.
+- `Q` adds the selected track or album to the Spotifyd queue without interrupting playback. Albums queue all tracks in order. Artists and playlists cannot be queued.
 - `Esc`, `h`, or `Left` returns to the previous page.
 - `/` starts a new search and `q` quits.
 

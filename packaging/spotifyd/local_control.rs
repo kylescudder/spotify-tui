@@ -365,7 +365,17 @@ async fn execute(
     let Some(spirc) = spirc else {
         return ControlResponse::disconnected();
     };
+    if let ControlOperation::Queue { edit } = operation {
+        return match spirc.local_queue(edit).await {
+            Ok(queue) => ControlResponse {
+                queue: Some(queue),
+                ..ControlResponse::ok()
+            },
+            Err(error) => ControlResponse::error(error.to_string()),
+        };
+    }
     let result = match operation {
+        ControlOperation::Queue { .. } => unreachable!(),
         ControlOperation::Snapshot => unreachable!(),
         ControlOperation::Activate => spirc.activate().map_err(|error| error.to_string()),
         ControlOperation::Toggle => spirc.play_pause().map_err(|error| error.to_string()),
@@ -569,6 +579,7 @@ struct ControlRequest {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum ControlOperation {
+    Queue { edit: Option<serde_json::Value> },
     Snapshot,
     Activate,
     Toggle,
@@ -586,6 +597,8 @@ struct ControlResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot: Option<WireSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    queue: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_code: Option<&'static str>,
@@ -597,6 +610,7 @@ impl ControlResponse {
             version: PROTOCOL_VERSION,
             ok: true,
             snapshot: None,
+            queue: None,
             error: None,
             error_code: None,
         }
@@ -614,6 +628,7 @@ impl ControlResponse {
             version: PROTOCOL_VERSION,
             ok: false,
             snapshot: None,
+            queue: None,
             error: Some(error.into()),
             error_code: None,
         }

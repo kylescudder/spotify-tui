@@ -1,3 +1,5 @@
+use crate::local_control::LocalControlPlaybackSource;
+use crate::queue::{QueueEdit, QueueEntry, QueueSnapshot};
 use std::{
     collections::HashSet,
     fmt, io,
@@ -233,9 +235,21 @@ pub enum CatalogRequest {
 pub trait CatalogSource {
     fn fetch(&mut self, request: &CatalogRequest) -> Result<CatalogPage, CatalogError>;
 
+    fn manage_queue(&mut self, _edit: Option<QueueEdit>) -> Result<QueueSnapshot, CatalogError> {
+        Err(CatalogError::Unavailable(
+            "Queue management is unavailable".into(),
+        ))
+    }
+
     fn play(&mut self, _playback: &CatalogPlayback) -> Result<(), CatalogError> {
         Err(CatalogError::Unavailable(
             "catalogue playback is unavailable".to_owned(),
+        ))
+    }
+
+    fn queue(&mut self, _item: &CatalogItem) -> Result<usize, CatalogError> {
+        Err(CatalogError::Unavailable(
+            "queueing is unavailable".to_owned(),
         ))
     }
 
@@ -424,6 +438,51 @@ impl SpotifyCatalogSource {
         })
     }
 
+    fn web_queue(&mut self) -> Result<Vec<QueueEntry>, CatalogError> {
+        #[derive(Deserialize)]
+        struct Response {
+            queue: Vec<Option<TrackWire>>,
+        }
+        let response: Response = self.get_json(api_url("me/player/queue")?)?;
+        Ok(response
+            .queue
+            .into_iter()
+            .flatten()
+            .filter_map(|track| {
+                Some(QueueEntry {
+                    uri: track.uri?,
+                    name: track.name?,
+                    detail: names(&track.artists),
+                })
+            })
+            .collect())
+    }
+
+    fn queue_track(&mut self, uri: &str) -> Result<(), CatalogError> {
+        if self.token.needs_refresh() {
+            self.refresh_or_authenticate()?;
+        }
+        let url = queue_url(uri, &spotifyd_device::device_id())?;
+        match request_queue(&self.agent, &url, self.token.access_token()) {
+            Err(ureq::Error::StatusCode(401)) => {
+                self.refresh_or_authenticate()?;
+                request_queue(&self.agent, &url, self.token.access_token())
+                    .map_err(CatalogError::from_http)
+            }
+            result => result.map_err(CatalogError::from_http),
+        }
+    }
+
+    fn album_queue_tracks(&mut self, id: &str) -> Result<Vec<String>, CatalogError> {
+        album_queue_tracks(|offset| {
+            let mut url = api_url(&format!("albums/{id}/tracks"))?;
+            url.query_pairs_mut()
+                .append_pair("limit", "50")
+                .append_pair("offset", &offset.to_string());
+            self.get_json(url)
+        })
+    }
+
     fn request_play(
         &mut self,
         playback: &CatalogPlayback,
@@ -493,6 +552,53 @@ impl CatalogSource for SpotifyCatalogSource {
 
     fn play(&mut self, playback: &CatalogPlayback) -> Result<(), CatalogError> {
         SpotifyCatalogSource::play(self, playback)
+    }
+
+    fn manage_queue(&mut self, edit: Option<QueueEdit>) -> Result<QueueSnapshot, CatalogError> {
+        let editing = edit.is_some();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| CatalogError::Unavailable(error.to_string()))?;
+        let local = runtime.block_on(async {
+            LocalControlPlaybackSource::connect()
+                .await?
+                .queue(edit)
+                .await
+        });
+        match local {
+            Ok(mut snapshot) => {
+                // Names are optional enrichment; an API outage must not turn an
+                // acknowledged local edit into a reported failure.
+                if let Ok(entries) = self.web_queue() {
+                    for entry in &mut snapshot.entries {
+                        if let Some(metadata) = entries.iter().find(|m| m.uri == entry.uri) {
+                            entry.name.clone_from(&metadata.name);
+                            entry.detail.clone_from(&metadata.detail);
+                        }
+                    }
+                }
+                Ok(snapshot)
+            }
+            Err(error) if editing => Err(CatalogError::Unavailable(format!("{error}. Press R to reload before trying another edit."))),
+            Err(_) => Ok(QueueSnapshot {
+                revision: String::new(), entries: self.web_queue()?, editable: false, context_count: 0,
+                notice: Some("Read-only Spotify queue. Editing requires updated Spotifyd with local_control, active on this device. Upgrade/start Spotifyd, then press R.".into()),
+            }),
+        }
+    }
+
+    fn queue(&mut self, item: &CatalogItem) -> Result<usize, CatalogError> {
+        let uris = match item.kind() {
+            CatalogItemKind::Track => vec![item.uri().to_owned()],
+            CatalogItemKind::Album => self.album_queue_tracks(item.id())?,
+            _ => {
+                return Err(CatalogError::InvalidRequest(
+                    "Select a track or album.".to_owned(),
+                ));
+            }
+        };
+        queue_tracks(&uris, |uri| self.queue_track(uri))
     }
 
     fn follow_artist(&mut self, id: &str, following: bool) -> Result<(), CatalogError> {
@@ -595,6 +701,68 @@ fn request_playback(
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct QueueTracksPage {
+    items: Vec<QueueTrack>,
+    next: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct QueueTrack {
+    uri: Option<String>,
+}
+
+fn album_queue_tracks(
+    mut fetch: impl FnMut(usize) -> Result<QueueTracksPage, CatalogError>,
+) -> Result<Vec<String>, CatalogError> {
+    let mut offset = 0;
+    let mut uris = Vec::new();
+    loop {
+        let page = fetch(offset)?;
+        uris.extend(page.items.into_iter().filter_map(|track| track.uri));
+        if page.next.is_none() {
+            return Ok(uris);
+        }
+        offset += 50;
+    }
+}
+
+fn queue_url(uri: &str, device_id: &str) -> Result<Url, CatalogError> {
+    let mut url = api_url("me/player/queue")?;
+    url.query_pairs_mut()
+        .append_pair("uri", uri)
+        .append_pair("device_id", device_id);
+    Ok(url)
+}
+
+fn request_queue(agent: &ureq::Agent, url: &Url, access_token: &str) -> Result<(), ureq::Error> {
+    agent
+        .post(url.as_str())
+        .header("Authorization", format!("Bearer {access_token}"))
+        .send_empty()?;
+    Ok(())
+}
+
+fn queue_tracks(
+    uris: &[String],
+    mut enqueue: impl FnMut(&str) -> Result<(), CatalogError>,
+) -> Result<usize, CatalogError> {
+    if uris.is_empty() {
+        return Err(CatalogError::Unavailable(
+            "No playable tracks to queue.".to_owned(),
+        ));
+    }
+    for (index, uri) in uris.iter().enumerate() {
+        if let Err(error) = enqueue(uri) {
+            return Err(CatalogError::Unavailable(format!(
+                "Added {index}/{} tracks; {error}. Start playback on Spotifyd if no device is active. Retrying adds duplicates of tracks already queued.",
+                uris.len()
+            )));
+        }
+    }
+    Ok(uris.len())
+}
+
 fn playback_body(playback: &CatalogPlayback) -> serde_json::Value {
     match playback.context_uri() {
         None => serde_json::json!({ "uris": [playback.uri()] }),
@@ -618,6 +786,14 @@ fn api_url(path: &str) -> Result<Url, CatalogError> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogEvent {
+    QueueLoaded {
+        request_id: u64,
+        result: Result<QueueSnapshot, String>,
+    },
+    QueueUpdated {
+        name: String,
+        result: Result<usize, String>,
+    },
     ArtistFollowUpdated {
         id: String,
         result: Result<bool, String>,
@@ -640,6 +816,11 @@ pub enum CatalogEvent {
 }
 
 enum RuntimeRequest {
+    ManageQueue {
+        request_id: u64,
+        edit: Option<QueueEdit>,
+    },
+    Queue(CatalogItem),
     FollowArtist {
         id: String,
         following: bool,
@@ -745,6 +926,22 @@ impl CatalogRuntime {
         self.event_rx.try_recv().ok()
     }
 
+    pub fn manage_queue(
+        &self,
+        request_id: u64,
+        edit: Option<QueueEdit>,
+    ) -> Result<(), CatalogRuntimeError> {
+        self.request_tx
+            .send(RuntimeRequest::ManageQueue { request_id, edit })
+            .map_err(|_| CatalogRuntimeError)
+    }
+
+    pub fn queue(&self, item: CatalogItem) -> Result<(), CatalogRuntimeError> {
+        self.request_tx
+            .send(RuntimeRequest::Queue(item))
+            .map_err(|_| CatalogRuntimeError)
+    }
+
     pub fn play(&self, playback: CatalogPlayback) -> Result<(), CatalogRuntimeError> {
         self.request_tx
             .send(RuntimeRequest::Play(playback))
@@ -790,6 +987,12 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
         while let Ok(newer) = request_rx.try_recv() {
             let keep_running = match std::mem::replace(&mut runtime_request, newer) {
                 RuntimeRequest::Fetch { .. } => true,
+                RuntimeRequest::ManageQueue { request_id, edit } => {
+                    manage_queue(request_id, edit, &mut source, &mut factory, event_tx)
+                }
+                RuntimeRequest::Queue(item) => {
+                    queue_selection(item, &mut source, &mut factory, event_tx)
+                }
                 RuntimeRequest::FollowArtist { id, following } => {
                     follow_artist(id, following, &mut source, &mut factory, event_tx)
                 }
@@ -804,6 +1007,18 @@ fn run_worker<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
             }
         }
         let (request_id, request) = match runtime_request {
+            RuntimeRequest::ManageQueue { request_id, edit } => {
+                if !manage_queue(request_id, edit, &mut source, &mut factory, event_tx) {
+                    return;
+                }
+                continue;
+            }
+            RuntimeRequest::Queue(item) => {
+                if !queue_selection(item, &mut source, &mut factory, event_tx) {
+                    return;
+                }
+                continue;
+            }
             RuntimeRequest::Fetch {
                 request_id,
                 request,
@@ -869,6 +1084,38 @@ fn follow_artist<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
         .map_err(|error| error.to_string());
     event_tx
         .send(CatalogEvent::ArtistFollowUpdated { id, result })
+        .is_ok()
+}
+
+fn manage_queue<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
+    request_id: u64,
+    edit: Option<QueueEdit>,
+    source: &mut Option<S>,
+    factory: &mut F,
+    event_tx: &mpsc::Sender<CatalogEvent>,
+) -> bool {
+    let result = ensure_source(source, factory)
+        .and_then(|source| source.manage_queue(edit))
+        .map_err(|error| error.to_string());
+    event_tx
+        .send(CatalogEvent::QueueLoaded { request_id, result })
+        .is_ok()
+}
+
+fn queue_selection<S: CatalogSource, F: FnMut() -> Result<S, CatalogError>>(
+    item: CatalogItem,
+    source: &mut Option<S>,
+    factory: &mut F,
+    event_tx: &mpsc::Sender<CatalogEvent>,
+) -> bool {
+    let result = ensure_source(source, factory)
+        .and_then(|source| source.queue(&item))
+        .map_err(|error| error.to_string());
+    event_tx
+        .send(CatalogEvent::QueueUpdated {
+            name: item.name().to_owned(),
+            result,
+        })
         .is_ok()
 }
 
@@ -1284,6 +1531,165 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn album_queue_fetches_every_page_before_queueing_and_keeps_order() {
+        let mut offsets = Vec::new();
+        let uris = album_queue_tracks(|offset| {
+            offsets.push(offset);
+            Ok(if offset == 0 {
+                serde_json::from_str(
+                    r#"{"items":[{"uri":"spotify:track:first"},{"uri":null}],"next":"next-page"}"#,
+                )
+                .unwrap()
+            } else {
+                serde_json::from_str(r#"{"items":[{"uri":"spotify:track:last"}],"next":null}"#)
+                    .unwrap()
+            })
+        })
+        .unwrap();
+        assert_eq!(offsets, vec![0, 50]);
+        assert_eq!(uris, vec!["spotify:track:first", "spotify:track:last"]);
+        assert!(
+            album_queue_tracks(|offset| {
+                if offset == 0 {
+                    Ok(QueueTracksPage {
+                        items: vec![],
+                        next: Some("next".to_owned()),
+                    })
+                } else {
+                    Err(CatalogError::QuotaExceeded)
+                }
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn queue_url_and_http_request_target_the_selected_track_on_spotifyd() {
+        use std::io::{BufRead, BufReader, Write};
+        let mut url = queue_url("spotify:track:chosen", "local-device").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        url.set_scheme("http").unwrap();
+        url.set_host(Some("127.0.0.1")).unwrap();
+        url.set_port(Some(listener.local_addr().unwrap().port()))
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(
+                line.trim(),
+                "POST /v1/me/player/queue?uri=spotify%3Atrack%3Achosen&device_id=local-device HTTP/1.1"
+            );
+            let mut authorized = false;
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                authorized |= line
+                    .to_ascii_lowercase()
+                    .starts_with("authorization: bearer queue-token");
+            }
+            assert!(authorized);
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+        request_queue(&ureq::Agent::new_with_defaults(), &url, "queue-token").unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn album_queue_preserves_order_and_stops_at_first_failure() {
+        let uris = vec!["first".to_owned(), "second".to_owned(), "third".to_owned()];
+        let mut seen = Vec::new();
+        assert_eq!(
+            queue_tracks(&uris, |uri| {
+                seen.push(uri.to_owned());
+                Ok(())
+            })
+            .unwrap(),
+            3
+        );
+        assert_eq!(seen, uris);
+        seen.clear();
+        let error = queue_tracks(&uris, |uri| {
+            seen.push(uri.to_owned());
+            if uri == "second" {
+                Err(CatalogError::QuotaExceeded)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(seen, vec!["first", "second"]);
+        assert!(error.contains("Added 1/3 tracks"));
+        assert!(queue_tracks(&[], |_| panic!("empty album must not submit requests")).is_err());
+    }
+
+    #[test]
+    fn queue_writes_survive_fetch_coalescing_and_report_errors() {
+        struct QueueSource;
+        impl CatalogSource for QueueSource {
+            fn fetch(&mut self, _: &CatalogRequest) -> Result<CatalogPage, CatalogError> {
+                panic!("superseded fetch")
+            }
+            fn queue(&mut self, item: &CatalogItem) -> Result<usize, CatalogError> {
+                if item.id() == "first" {
+                    Ok(1)
+                } else {
+                    Err(CatalogError::QuotaExceeded)
+                }
+            }
+        }
+        let (request_tx, request_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
+        for id in ["first", "second"] {
+            request_tx
+                .send(RuntimeRequest::Queue(CatalogItem::new(
+                    CatalogItemKind::Track,
+                    id,
+                    format!("spotify:track:{id}"),
+                    id,
+                    "",
+                    None,
+                )))
+                .unwrap();
+            request_tx
+                .send(RuntimeRequest::Fetch {
+                    request_id: 1,
+                    request: CatalogRequest::Search("superseded".to_owned()),
+                })
+                .unwrap();
+        }
+        request_tx.send(RuntimeRequest::Shutdown).unwrap();
+        run_worker(
+            || Ok(QueueSource),
+            HomeWorker::new(HomeConfig::default(), None),
+            request_rx,
+            &event_tx,
+        );
+        assert_eq!(
+            event_rx.try_recv().unwrap(),
+            CatalogEvent::QueueUpdated {
+                name: "first".to_owned(),
+                result: Ok(1)
+            }
+        );
+        assert_eq!(
+            event_rx.try_recv().unwrap(),
+            CatalogEvent::QueueUpdated {
+                name: "second".to_owned(),
+                result: Err(CatalogError::QuotaExceeded.to_string())
+            }
+        );
+        assert!(event_rx.try_recv().is_err());
+    }
 
     #[test]
     fn current_track_pages_use_album_and_primary_artist_ids() {

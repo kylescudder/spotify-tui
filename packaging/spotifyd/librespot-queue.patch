@@ -1,0 +1,83 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,6 +10,7 @@
+ 
+ mod context_resolver;
+ mod model;
++mod queue_control;
+ mod shuffle_vec;
+ mod spirc;
+ mod state;
+--- a/src/spirc.rs
++++ b/src/spirc.rs
+@@ -115,6 +115,10 @@
+ 
+ #[derive(Debug)]
+ enum SpircCommand {
++    LocalQueue {
++        edit: Option<serde_json::Value>,
++        reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, Error>>,
++    },
+     Play,
+     PlayPause,
+     Pause,
+@@ -126,7 +130,9 @@
+     Shuffle(bool),
+     Repeat(bool),
+     RepeatTrack(bool),
+-    Disconnect { pause: bool },
++    Disconnect {
++        pause: bool,
++    },
+     SetPosition(u32),
+     SetVolume(u16),
+     Activate,
+@@ -147,6 +153,19 @@
+ }
+ 
+ impl Spirc {
++    /// Read or edit the active device's explicit queue, rejecting stale revisions.
++    pub async fn local_queue(
++        &self,
++        edit: Option<serde_json::Value>,
++    ) -> Result<serde_json::Value, Error> {
++        let (reply, result) = tokio::sync::oneshot::channel();
++        self.commands
++            .send(SpircCommand::LocalQueue { edit, reply })?;
++        result
++            .await
++            .map_err(|_| Error::unavailable("Spotifyd queue worker stopped"))?
++    }
++
+     /// Initializes a new spotify connect device
+     ///
+     /// The returned tuple consists out of a handle to the [`Spirc`] that
+@@ -632,6 +651,28 @@
+     async fn handle_command(&mut self, cmd: SpircCommand) -> Result<(), Error> {
+         trace!("Received SpircCommand::{cmd:?}");
+         match cmd {
++            SpircCommand::LocalQueue { edit, reply } => {
++                let result = if !self.connect_state.is_active() {
++                    Err(Error::unavailable(
++                        "Start playback on local Spotifyd, then refresh the queue.",
++                    ))
++                } else if let Some(edit) = edit {
++                    match crate::queue_control::edit(self.connect_state.player(), &edit) {
++                        Ok(command) => {
++                            self.connect_state.handle_set_queue(command);
++                            self.handle_preload_next_track();
++                            self.notify().await.map(|()| {
++                                crate::queue_control::snapshot(self.connect_state.player())
++                            })
++                        }
++                        Err(error) => Err(error),
++                    }
++                } else {
++                    Ok(crate::queue_control::snapshot(self.connect_state.player()))
++                };
++                let _ = reply.send(result);
++                return Ok(());
++            }
+             SpircCommand::Shutdown => {
+                 trace!("Received SpircCommand::Shutdown");
+                 self.handle_pause();

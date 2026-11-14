@@ -11,7 +11,37 @@ pub fn browser_command_for_key(key: KeyEvent, mode: BrowserMode) -> Option<Brows
         return Some(BrowserCommand::Quit);
     }
 
+    if key.code == KeyCode::Char('v')
+        && key.modifiers.is_empty()
+        && matches!(
+            mode,
+            BrowserMode::Closed | BrowserMode::Home | BrowserMode::Page
+        )
+    {
+        return Some(BrowserCommand::OpenQueue);
+    }
     match mode {
+        BrowserMode::Queue
+            if key
+                .modifiers
+                .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL) =>
+        {
+            None
+        }
+        BrowserMode::Queue => match key.code {
+            KeyCode::Char('d') | KeyCode::Delete => Some(BrowserCommand::RemoveFromQueue),
+            KeyCode::Char('K') => Some(BrowserCommand::MoveQueueUp),
+            KeyCode::Char('J') => Some(BrowserCommand::MoveQueueDown),
+            KeyCode::Char('c') => Some(BrowserCommand::ClearQueue),
+            KeyCode::Char('q') => Some(BrowserCommand::Quit),
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => Some(BrowserCommand::Back),
+            KeyCode::Char('R') => Some(BrowserCommand::RefreshQueue),
+            KeyCode::Up | KeyCode::Char('k') => Some(BrowserCommand::Previous),
+            KeyCode::Down | KeyCode::Char('j') => Some(BrowserCommand::Next),
+            KeyCode::Char('y') => Some(BrowserCommand::ConfirmClearQueue),
+            KeyCode::Char('n') => Some(BrowserCommand::CancelClearQueue),
+            _ => None,
+        },
         BrowserMode::Closed => match key.code {
             KeyCode::Char('b') if key.modifiers.is_empty() => {
                 Some(BrowserCommand::OpenCurrent(TrackDestination::Album))
@@ -28,6 +58,13 @@ pub fn browser_command_for_key(key: KeyEvent, mode: BrowserMode) -> Option<Brows
             _ => None,
         },
         BrowserMode::Home => match key.code {
+            KeyCode::Char('Q')
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(BrowserCommand::AddToQueue)
+            }
             KeyCode::Char('q') => Some(BrowserCommand::Quit),
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => Some(BrowserCommand::Back),
             KeyCode::Char('/') => Some(BrowserCommand::OpenSearch),
@@ -51,6 +88,13 @@ pub fn browser_command_for_key(key: KeyEvent, mode: BrowserMode) -> Option<Brows
             _ => None,
         },
         BrowserMode::Page => match key.code {
+            KeyCode::Char('Q')
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(BrowserCommand::AddToQueue)
+            }
             KeyCode::Char('f') if key.modifiers.is_empty() => {
                 Some(BrowserCommand::ToggleArtistFollow)
             }
@@ -107,6 +151,67 @@ pub fn command_for_key(key: KeyEvent) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_view_keys_do_not_interfere_with_search() {
+        for mode in [BrowserMode::Home, BrowserMode::Closed, BrowserMode::Page] {
+            assert_eq!(
+                browser_command_for_key(
+                    KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+                    mode
+                ),
+                Some(BrowserCommand::OpenQueue)
+            );
+        }
+        for (code, command) in [
+            ('d', BrowserCommand::RemoveFromQueue),
+            ('J', BrowserCommand::MoveQueueDown),
+            ('K', BrowserCommand::MoveQueueUp),
+            ('c', BrowserCommand::ClearQueue),
+            ('y', BrowserCommand::ConfirmClearQueue),
+            ('n', BrowserCommand::CancelClearQueue),
+        ] {
+            assert_eq!(
+                browser_command_for_key(
+                    KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE),
+                    BrowserMode::Queue
+                ),
+                Some(command)
+            );
+            assert_eq!(
+                browser_command_for_key(
+                    KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE),
+                    BrowserMode::Editing
+                ),
+                Some(BrowserCommand::Insert(code))
+            );
+        }
+    }
+
+    #[test]
+    fn queue_shortcut_preserves_search_typing_and_quit() {
+        let key = KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT);
+        for mode in [BrowserMode::Home, BrowserMode::Page] {
+            assert_eq!(
+                browser_command_for_key(key, mode),
+                Some(BrowserCommand::AddToQueue)
+            );
+            assert_eq!(
+                browser_command_for_key(
+                    KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+                    mode
+                ),
+                Some(BrowserCommand::Quit)
+            );
+        }
+        assert_eq!(
+            browser_command_for_key(key, BrowserMode::Editing),
+            Some(BrowserCommand::Insert('Q'))
+        );
+        for mode in [BrowserMode::Closed, BrowserMode::Waiting] {
+            assert_eq!(browser_command_for_key(key, mode), None);
+        }
+    }
 
     #[test]
     fn artist_follow_shortcut_only_applies_to_pages() {
