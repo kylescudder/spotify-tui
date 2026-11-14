@@ -118,7 +118,7 @@ curl --proto '=https' --proto-redir '=https' --tlsv1.2 -LsSf \
   https://github.com/kylescudder/spotify-tui/releases/latest/download/install.sh \
   -o install-spotify-tui.sh
 less install-spotify-tui.sh
-sh install-spotify-tui.sh --version 0.1.0 --install-dir "$HOME/.local/bin"
+sh install-spotify-tui.sh --version 0.2.0 --install-dir "$HOME/.local/bin"
 ```
 
 Useful installer controls are:
@@ -154,7 +154,7 @@ Invoke-WebRequest `
   https://github.com/kylescudder/spotify-tui/releases/latest/download/install.ps1 `
   -OutFile install-spotify-tui.ps1
 Get-Content .\install-spotify-tui.ps1
-.\install-spotify-tui.ps1 -Version 0.1.0 -NoModifyPath
+.\install-spotify-tui.ps1 -Version 0.2.0 -NoModifyPath
 ```
 
 PowerShell accepts `-ConfigDir`, `-NoDependencies`, `-ForceDependencies`,

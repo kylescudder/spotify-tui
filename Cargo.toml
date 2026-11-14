@@ -1,6 +1,6 @@
 [package]
 name = "spotify-tui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 default-run = "spotify-tui"
 description = "A local-first terminal Spotify interface powered by spotifyd"
