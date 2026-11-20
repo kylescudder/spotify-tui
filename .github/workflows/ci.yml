@@ -114,7 +114,7 @@ jobs:
   spotifyd-linux-runtime:
     name: Linux ARM64 Spotifyd runtime
     runs-on: ubuntu-24.04-arm
-    container: rust:1.88.0-bullseye@sha256:b315f988b86912bafa7afd39a6ded0a497bf850ec36578ca9a3bdd6a14d5db4e
+    container: rust:1.98.0-bullseye@sha256:4730e387a220a08a365c77da3096544dde214f9d796c16284d4be45438cad4a9
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
