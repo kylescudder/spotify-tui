@@ -1005,6 +1005,30 @@ warning = "light-yellow"
     }
 
     #[test]
+    fn rejects_malformed_and_duplicate_toml_with_a_parse_error() {
+        for contents in [
+            "version = 1\n[home\n",
+            "version = 1\ntheme = \"spotify\"\ntheme = \"midnight\"\n",
+            "version = 1\n[themes.acme]\nbackground = \"#101010\"\n[themes.acme]\nbackground = \"#202020\"\n",
+        ] {
+            let error = Config::from_toml(contents).expect_err("invalid TOML should be rejected");
+            assert!(
+                matches!(error, ConfigError::Toml { .. }),
+                "expected a TOML parse error for {contents:?}, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn reports_the_line_of_a_duplicate_toml_key() {
+        let error = Config::from_toml("version = 1\ntheme = \"spotify\"\ntheme = \"midnight\"\n")
+            .expect_err("duplicate keys should be rejected");
+        let message = error.to_string();
+        assert!(message.contains("duplicate key"), "{message}");
+        assert!(message.contains("line 3"), "{message}");
+    }
+
+    #[test]
     fn rejects_unsupported_config_versions() {
         let error = Config::from_toml("version = 2").expect_err("version should be rejected");
         assert!(matches!(
