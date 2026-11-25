@@ -91,8 +91,8 @@ printf '%s\n' "$release_arm_runtime_job" |
 
 for runtime_job in "$release_arm_runtime_job" "$arm_runtime_job"; do
   printf '%s\n' "$runtime_job" |
-    grep -Fq 'container: rust:1.88.0-bullseye@sha256:' ||
-    fail "Linux ARM64 Spotifyd must use the pinned glibc 2.31 build container"
+    grep -Eq 'container: rust:[0-9]+\.[0-9]+\.[0-9]+-bullseye@sha256:[0-9a-f]{64}$' ||
+    fail "Linux ARM64 Spotifyd must use a digest-pinned Rust bullseye (glibc 2.31) build container"
 
   printf '%s\n' "$runtime_job" |
     grep -Fq 'sh packaging/spotifyd/apply-linux-portability.sh spotifyd-upstream' ||
