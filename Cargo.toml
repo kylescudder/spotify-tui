@@ -13,7 +13,7 @@ base64 = "0.22.1"
 crossterm = "0.29.0"
 directories = "6.0.0"
 gethostname = "1.1.0"
-getrandom = "0.3.4"
+getrandom = "0.4.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 lru = "0.18.4"
 ratatui = "0.30.2"
